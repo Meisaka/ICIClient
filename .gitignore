@@ -1,0 +1,9 @@
+*.aps
+*.suo
+*.sdf
+*.opensdf
+*.user
+*~
+*.swp
+ipch
+

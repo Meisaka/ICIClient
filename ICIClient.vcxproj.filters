@@ -23,9 +23,9 @@
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <Library Include="C:\WindowSDK\v7.1\Lib\WS2_32.Lib" />
     <Library Include="..\..\..\..\Microsoft DirectX SDK (August 2009)\Lib\x86\ddraw.lib" />
     <Library Include="..\..\..\..\Microsoft DirectX SDK (August 2009)\Lib\x86\dxguid.lib" />
+    <Library Include="..\..\..\..\WindowSDK\v7.1\Lib\WS2_32.Lib" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="ICIClient.cpp">

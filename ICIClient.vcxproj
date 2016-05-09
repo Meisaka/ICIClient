@@ -89,7 +89,7 @@
   <ItemGroup>
     <Library Include="..\..\..\..\Microsoft DirectX SDK (August 2009)\Lib\x86\ddraw.lib" />
     <Library Include="..\..\..\..\Microsoft DirectX SDK (August 2009)\Lib\x86\dxguid.lib" />
-    <Library Include="C:\WindowSDK\v7.1\Lib\WS2_32.Lib" />
+    <Library Include="..\..\..\..\WindowSDK\v7.1\Lib\WS2_32.Lib" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

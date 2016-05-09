@@ -69,6 +69,8 @@ static bool unet;
 static sockaddr_in remokon;
 static unsigned char *netbuff;
 static uint32_t keybid = 0;
+static uint32_t nyaid = 0;
+static uint32_t updates = 0;
 static int lookups = 0;
 
 static unsigned short virtmeme[0x10000];
@@ -280,7 +282,9 @@ int NetworkClose()
 	else LogMessage("Disconnected\n");
 
 	keybid = 0;
+	nyaid = 0;
 	lookups = 0;
+	updates = 0;
 	return 0;
 }
 
@@ -332,6 +336,12 @@ int NetControlUpdate()
 	case 0:
 		lookups++;
 		*(uint32_t*)(nf) = 0x01100000;
+		NetworkMessageOut(nf, 4);
+	case 1:
+		break;
+	case 2:
+		lookups++;
+		*(uint32_t*)(nf) = 0x01200000;
 		NetworkMessageOut(nf, 4);
 		break;
 	}
@@ -460,17 +470,34 @@ int NetworkMessageIn(unsigned char *in, size_t len)
 	uint32_t mh;
 	uint32_t ml;
 	uint16_t mc;
-	uint32_t i;
+	uint32_t i, l;
 	uint32_t *mi = (uint32_t*)in;
+	uint16_t *mw = (uint16_t*)in;
 	mh = *(uint32_t*)in;
 	mc = (mh >> 20) & 0xfff;
 	ml = mh & 0xfffff;
 	switch(mc) {
 	case 0xE0:
+		l = (ml - 6);
+		if((mw[4]) + (l) < 0x20000) {
+			memcpy(virtmeme+(mw[4]/2), mw+5, l);
+			updates++;
+		}
 		break;
 	case 0xE1:
+		l = (ml - 8);
+		if((mi[2] & 0x1ffff) + l < 0x20000) {
+			memcpy(virtmeme+(mi[2]/2), mi+3, l);
+			updates++;
+		}
 		break;
 	case 0xE2:
+		l = (ml - 4);
+		LogMessage("RV sync [%08x] +%d\n", mi[1], l);
+		if(mi[1] == nyaid && l <= sizeof(struct NyaLEM)) {
+			LogMessage("sync copy\n");
+			memcpy(&MyStdDisp, mi+2, l);
+		}
 		break;
 	case 0xE3:
 		break;
@@ -480,8 +507,15 @@ int NetworkMessageIn(unsigned char *in, size_t len)
 	case 0x201:
 		for(i = 0; i < (ml / 8); i++) {
 			LogMessage("Obj [%08x]: %x\n", mi[1+(i*2)], mi[2+(i*2)]);
-			if(mi[2+(i*2)] == 0x5000) {
+			switch(mi[2+(i*2)]) {
+			case 0x5000:
 				keybid = mi[1+(i*2)];
+				LogMessage("Keyboard [%08x]\n", mi[1+(i*2)]);
+				break;
+			case 0x5002:
+				nyaid = mi[1+(i*2)];
+				LogMessage("Nya LEM [%08x]\n", mi[1+(i*2)]);
+				break;
 			}
 		}
 		if(mc == 0x201) lookups++;
@@ -559,7 +593,7 @@ _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdLine, int nC
 	MyStdDisp.fontmem = 0;
 	MyStdDisp.palmem = 0;
 	imva_reset(&MyIMVA);
-	MyIMVA.base = 1;
+	MyIMVA.base = 0xe900;
 	MyIMVA.ovbase = 1;
 	MyIMVA.ovoffset = 41;
 	MyIMVA.ovmode = 0x0035;
@@ -636,6 +670,8 @@ _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdLine, int nC
 					}
 				}
 			} while(crs && ++nlimit < 32);
+		} else {
+			zm = zl = zil = zh = 0;
 		}
 		NetControlUpdate();
 		UpdateDisplay();
@@ -674,7 +710,6 @@ int LEMRaster(NyaLEM *lem, unsigned int height, unsigned int width, unsigned int
 	unsigned int cla, clb, clf, ctk;
 	unsigned short vmmp;
 	unsigned short* lclfont;
-	unsigned short* lclpal;
 	unsigned int ccpal[16];
 	int dn;
 	dn = 0;
@@ -692,11 +727,6 @@ int LEMRaster(NyaLEM *lem, unsigned int height, unsigned int width, unsigned int
 	} else {
 		lclfont = deffont;
 	}
-	if(lem->palmem) {
-		lclpal = lem->cachepal;
-	} else {
-		lclpal = defpal;
-	}
 
 	ctk = GetTickCount();
 	if(lem->status == 1) {
@@ -711,13 +741,19 @@ int LEMRaster(NyaLEM *lem, unsigned int height, unsigned int width, unsigned int
 
 	switch(dn) {
 	case 0:
+		
 		for(x = 0; x < 16; x++) {
-			vtb = lclpal[x];
+			if(lem->palmem) {
+				vtb = virtmeme[(lem->palmem + x) & 0xffff];
+			} else {
+				vtb = defpal[x];
+			}
 			vta = ((vtb & 0x000f) | ((vtb & 0x000f) << 4));
 			vta |= (((vtb & 0x000f0) << 4) | ((vtb & 0x000f0) << 8));
 			vta |= (((vtb & 0x000f00) << 8) | ((vtb & 0x000f00) << 12));
 			ccpal[x] = vta;
 		}
+
 		vta = ccpal[lem->border & 0x0f];
 		yo = 0;
 		for(y = 96+12; y > 0; y--) {
@@ -728,8 +764,8 @@ int LEMRaster(NyaLEM *lem, unsigned int height, unsigned int width, unsigned int
 		}
 
 		yo = 0;
-		//vmmp = StdDisp->dspmem;
-		vmmp = 0;
+		vmmp = lem->dspmem;
+		//vmmp = 0;
 		if(ctk > lem->TTFlip || lem->TTFlip > ctk + 10000) {
 			lem->status ^= 2;
 			lem->TTFlip = ctk + 800;
@@ -740,8 +776,8 @@ int LEMRaster(NyaLEM *lem, unsigned int height, unsigned int width, unsigned int
 			vta = 0x0001;
 			for(y = 8; y > 0; y--) {
 				for(x = 0; x < 32; x++) {
-					//vtw = virtmeme[(uint16_t)(vmmp + x)];
-					vtw = lem->cachedisp[vmmp + x];
+					vtw = virtmeme[(uint16_t)(vmmp + x)];
+					//vtw = lem->cachedisp[vmmp + x];
 					clb = ccpal[(vtw >> 8) & 0x0f];
 					clf = ccpal[(vtw >> 12) & 0x0f];
 					if((vtw & 0x0080) && (lem->status & 2))

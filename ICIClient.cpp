@@ -333,7 +333,8 @@ int ResetCPU()
 	if(dcpuid) {
 		*(uint32_t*)(nf) = 0x02400004;
 		*(uint32_t*)(nf+4) = dcpuid;
-		NetworkMessageOut(nf, 8);
+		*(uint32_t*)(nf+8) = 0xFF8859EA;
+		NetworkMessageOut(nf, 12);
 	}
 	return 0;
 }
@@ -346,22 +347,26 @@ int NetControlUpdate()
 	case 0:
 		lookups++;
 		*(uint32_t*)(nf) = 0x01300000; // List classes
-		NetworkMessageOut(nf, 4);
+		*(uint32_t*)(nf+4) = 0xFF8859EA;
+		NetworkMessageOut(nf, 8);
 	case 1: break;
 	case 2:
 		lookups++;
 		*(uint32_t*)(nf) = 0x01100000; // List obj
-		NetworkMessageOut(nf, 4);
+		*(uint32_t*)(nf+4) = 0xFF8859EA;
+		NetworkMessageOut(nf, 8);
 	case 3: break;
 	case 4:
 		lookups++;
 		*(uint32_t*)(nf) = 0x01400000; // List Heir
-		NetworkMessageOut(nf, 4);
+		*(uint32_t*)(nf+4) = 0xFF8859EA;
+		NetworkMessageOut(nf, 8);
 	case 5: break;
 	case 6:
 		lookups++;
 		*(uint32_t*)(nf) = 0x01200000; // Syncall
-		NetworkMessageOut(nf, 4);
+		*(uint32_t*)(nf+4) = 0xFF8859EA;
+		NetworkMessageOut(nf, 8);
 		break;
 	case 7:
 		if(dcpuid) {

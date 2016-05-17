@@ -70,6 +70,7 @@ static sockaddr_in remokon;
 static unsigned char *netbuff;
 static uint32_t keybid = 0;
 static uint32_t nyaid = 0;
+static uint32_t dcpuid = 0;
 static uint32_t updates = 0;
 static int lookups = 0;
 
@@ -113,9 +114,6 @@ struct NyaLEM {
 	DWORD TTI;
 	DWORD TTFlip;
 	int status;
-	unsigned short cachepal[16];
-	unsigned short cachefont[256];
-	unsigned short cachedisp[384];
 } MyStdDisp;
 
 ATOM				MyRegisterClass(HINSTANCE hInstance);
@@ -328,6 +326,18 @@ int WriteKey(unsigned char code, int state)
 	return NetworkMessageOut(nf, 12);
 }
 
+int ResetCPU()
+{
+	if(!unet) return 0;
+	unsigned char nf[16];
+	if(dcpuid) {
+		*(uint32_t*)(nf) = 0x02400004;
+		*(uint32_t*)(nf+4) = dcpuid;
+		NetworkMessageOut(nf, 8);
+	}
+	return 0;
+}
+
 int NetControlUpdate()
 {
 	if(!unet) return 0;
@@ -335,14 +345,29 @@ int NetControlUpdate()
 	switch(lookups) {
 	case 0:
 		lookups++;
-		*(uint32_t*)(nf) = 0x01100000;
+		*(uint32_t*)(nf) = 0x01300000; // List classes
 		NetworkMessageOut(nf, 4);
-	case 1:
-		break;
+	case 1: break;
 	case 2:
 		lookups++;
-		*(uint32_t*)(nf) = 0x01200000;
+		*(uint32_t*)(nf) = 0x01100000; // List obj
 		NetworkMessageOut(nf, 4);
+	case 3: break;
+	case 4:
+		lookups++;
+		*(uint32_t*)(nf) = 0x01400000; // List Heir
+		NetworkMessageOut(nf, 4);
+	case 5: break;
+	case 6:
+		lookups++;
+		*(uint32_t*)(nf) = 0x01200000; // Syncall
+		NetworkMessageOut(nf, 4);
+		break;
+	case 7:
+		if(dcpuid) {
+			lookups++;
+			ResetCPU();
+		}
 		break;
 	}
 	return 0;
@@ -473,9 +498,12 @@ int NetworkMessageIn(unsigned char *in, size_t len)
 	uint32_t i, l;
 	uint32_t *mi = (uint32_t*)in;
 	uint16_t *mw = (uint16_t*)in;
+	if(*(uint32_t*)(in+4+len) != 0xFF8859EA) {
+		LogMessage("Network Packet Invalid\n");
+	}
 	mh = *(uint32_t*)in;
 	mc = (mh >> 20) & 0xfff;
-	ml = mh & 0xfffff;
+	ml = mh & 0x1fff;
 	switch(mc) {
 	case 0xE0:
 		l = (ml - 6);
@@ -505,9 +533,14 @@ int NetworkMessageIn(unsigned char *in, size_t len)
 		break;
 	case 0x200:
 	case 0x201:
+		LogMessage("Obj List\n");
 		for(i = 0; i < (ml / 8); i++) {
 			LogMessage("Obj [%08x]: %x\n", mi[1+(i*2)], mi[2+(i*2)]);
 			switch(mi[2+(i*2)]) {
+			case 0x3001:
+				dcpuid = mi[1+(i*2)];
+				LogMessage("DCPU [%08x]\n", mi[1+(i*2)]);
+				break;
 			case 0x5000:
 				keybid = mi[1+(i*2)];
 				LogMessage("Keyboard [%08x]\n", mi[1+(i*2)]);
@@ -519,6 +552,59 @@ int NetworkMessageIn(unsigned char *in, size_t len)
 			}
 		}
 		if(mc == 0x201) lookups++;
+		break;
+	case 0x213:
+	case 0x313:
+		LogMessage("Obj Classes\n");
+		{
+			uint32_t iclass = 0;
+			uint32_t iflag = 0;
+			char iname[256];
+			char idesc[256];
+			int rdpoint = 0;
+			int rdtype = 0;
+			for(i = 0; i < ml; i++) {
+				switch(rdtype) {
+				case 0:
+					iclass |= in[4+i] << (8*rdpoint);
+					if(++rdpoint > 3) { rdpoint = 0; rdtype++; }
+					break;
+				case 1:
+					iflag |= in[4+i] << (8*rdpoint);
+					if(++rdpoint > 3) { rdpoint = 0; rdtype++; }
+					break;
+				case 2:
+					iname[rdpoint] = in[4+i];
+					if(++rdpoint > 254 || !in[4+i]) {
+						iname[rdpoint] = 0;
+						rdpoint = 0;
+						rdtype++;
+					}
+					break;
+				case 3:
+					idesc[rdpoint] = in[4+i];
+					if(++rdpoint > 254 || !in[4+i]) {
+						iname[rdpoint] = 0;
+						rdpoint = 0;
+						rdtype = 0;
+						LogMessage("Class [%08x]: F=%x \"%s\" -- %s\n", iclass, iflag, iname, idesc);
+						iclass = 0;
+						iflag = 0;
+					}
+					break;
+				}
+			}
+		}
+		if(mc == 0x313) lookups++;
+		break;
+	case 0x214:
+	case 0x314:
+		LogMessage("Obj Heir\n");
+		ml /= 4;
+		for(i = 0; i < ml; i+=4) {
+			LogMessage("Heir [%08x]: U[%08x] D[%08x] M[%08x]\n", mi[1+i], mi[3+i], mi[2+i], mi[4+i]);
+		}
+		if(mc == 0x314) lookups++;
 		break;
 	default:
 		break;
@@ -593,20 +679,20 @@ _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdLine, int nC
 	MyStdDisp.fontmem = 0;
 	MyStdDisp.palmem = 0;
 	imva_reset(&MyIMVA);
-	MyIMVA.base = 0xe900;
+	MyIMVA.base = 0x8000;
 	MyIMVA.ovbase = 1;
 	MyIMVA.ovoffset = 41;
 	MyIMVA.ovmode = 0x0035;
-	virtmeme[1] = 0xAAAA;
-	virtmeme[2] = 0x5555;
-	virtmeme[3] = 0xffff;
-	virtmeme[41] = 0xAAAA;
-	virtmeme[42] = 0x5555;
-	virtmeme[43] = 0xffff;
+
+	for(i = 0; i < 16; i++) {
+		virtmeme[20+i] = (i << 12) | (i << 8);
+	}
+	for(i = 0; i < 25; i++) {
+		virtmeme[36+i] = "ICIClient - not connected"[i] | 0xF000;
+	}
 	apprun = TRUE;
 	unsigned short vmmp = 0;
 
-	for(i = 0; i < 384; i++) MyStdDisp.cachedisp[i] = 0x0000f120;
 	unet = false;
 	ZeroMemory(&remokon, sizeof(sockaddr_in));
 	
@@ -652,14 +738,16 @@ _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdLine, int nC
 									zl = zil = 0;
 									LogMessage("Net Keepalive\n");
 								} else {
-									zl = zh & 0xfffff;
+									zl = zh & 0x1fff;
+									if(zl & 3) zl += 4 - (zl & 3);
+									zl += 4;
 									zil = 0;
 								}
 							} else if(zil < zl) {
 								zil += i;
 							}
 							if(zil >= zl) {
-								NetworkMessageIn(netbuff, zil);
+								NetworkMessageIn(netbuff, zil-4);
 								zl = zil = zh = zm = 0;
 							}
 						}
@@ -723,7 +811,7 @@ int LEMRaster(NyaLEM *lem, unsigned int height, unsigned int width, unsigned int
 		return 1;
 	}
 	if(lem->fontmem) {
-		lclfont = lem->cachefont;
+		lclfont = virtmeme + lem->fontmem;
 	} else {
 		lclfont = deffont;
 	}
@@ -918,7 +1006,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 	hInst = hInstance;
 
 	hwMain = hWnd = CreateWindow(szWindowClass, szTitle, WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX|WS_THICKFRAME,
-		CW_USEDEFAULT, 0, 440, 380, NULL, NULL, hInstance, NULL);
+		CW_USEDEFAULT, 0, 800, 600, NULL, NULL, hInstance, NULL);
 
 	if (!hWnd) {
 		return FALSE;
@@ -956,6 +1044,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 			if(!Reconnect()) {
 				LogMessage("Connected\n");
 			}
+			break;
+		case ID_CONTROL_RESETCPU:
+			ResetCPU();
 			break;
 		case IDM_EXIT:
 			DestroyWindow(hWnd);

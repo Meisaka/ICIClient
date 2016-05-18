@@ -68,6 +68,7 @@ static SOCKET lcs;
 static bool unet;
 static sockaddr_in remokon;
 static unsigned char *netbuff;
+static unsigned char *msgbuff;
 static uint32_t keybid = 0;
 static uint32_t nyaid = 0;
 static uint32_t dcpuid = 0;
@@ -286,11 +287,17 @@ int NetworkClose()
 	return 0;
 }
 
-int NetworkMessageOut(unsigned char *in, size_t len)
+int NetworkMessageOut()
 {
 	timeval tvl;
 	fd_set fdsr;
 	int i;
+	size_t mlen;
+	mlen = (*(uint32_t*)msgbuff) & 0x1fff;
+	mlen += 4;
+	while(mlen & 3) { msgbuff[mlen] = 0; mlen++; }
+	*(uint32_t*)(msgbuff+mlen) = 0xFF8859EA;
+	mlen += 4;
 	if(unet) {
 		FD_ZERO(&fdsr);
 		FD_SET(lcs, &fdsr);
@@ -298,7 +305,7 @@ int NetworkMessageOut(unsigned char *in, size_t len)
 		tvl.tv_usec = 0;
 		i = select(3, NULL, &fdsr, NULL, &tvl);
 		if(i) {
-			i = send(lcs, (char*)in, len, 0);
+			i = send(lcs, (char*)msgbuff, mlen, 0);
 			if(!i) {
 				// close
 				NetworkClose();
@@ -318,23 +325,21 @@ int NetworkMessageOut(unsigned char *in, size_t len)
 int WriteKey(unsigned char code, int state)
 {
 	if(!keybid) return -1;
-	unsigned char nf[16];
-	*(uint32_t*)(nf) = 0x08000008;
-	*(uint32_t*)(nf+4) = keybid; // TODO ID the keyboard
-	*(uint16_t*)(nf+8) = 0x20E7 + state;
-	*(uint16_t*)(nf+10) = code;
-	return NetworkMessageOut(nf, 12);
+	*(uint32_t*)(msgbuff) = 0x08000008;
+	*(uint32_t*)(msgbuff+4) = keybid; // TODO ID the keyboard
+	*(uint16_t*)(msgbuff+8) = 0x20E7 + state;
+	*(uint16_t*)(msgbuff+10) = code;
+	return NetworkMessageOut();
 }
 
 int ResetCPU()
 {
 	if(!unet) return 0;
-	unsigned char nf[16];
+	uint32_t *nf = (uint32_t*)msgbuff;
 	if(dcpuid) {
-		*(uint32_t*)(nf) = 0x02400004;
-		*(uint32_t*)(nf+4) = dcpuid;
-		*(uint32_t*)(nf+8) = 0xFF8859EA;
-		NetworkMessageOut(nf, 12);
+		nf[0] = 0x02400004;
+		nf[1] = dcpuid;
+		NetworkMessageOut();
 	}
 	return 0;
 }
@@ -342,31 +347,27 @@ int ResetCPU()
 int NetControlUpdate()
 {
 	if(!unet) return 0;
-	unsigned char nf[16];
+	uint32_t *nf = (uint32_t*)msgbuff;
 	switch(lookups) {
 	case 0:
 		lookups++;
-		*(uint32_t*)(nf) = 0x01300000; // List classes
-		*(uint32_t*)(nf+4) = 0xFF8859EA;
-		NetworkMessageOut(nf, 8);
+		nf[0] = 0x01300000; // List classes
+		NetworkMessageOut();
 	case 1: break;
 	case 2:
 		lookups++;
-		*(uint32_t*)(nf) = 0x01100000; // List obj
-		*(uint32_t*)(nf+4) = 0xFF8859EA;
-		NetworkMessageOut(nf, 8);
+		nf[0] = 0x01100000; // List obj
+		NetworkMessageOut();
 	case 3: break;
 	case 4:
 		lookups++;
-		*(uint32_t*)(nf) = 0x01400000; // List Heir
-		*(uint32_t*)(nf+4) = 0xFF8859EA;
-		NetworkMessageOut(nf, 8);
+		nf[0] = 0x01400000; // List Heir
+		NetworkMessageOut();
 	case 5: break;
 	case 6:
 		lookups++;
-		*(uint32_t*)(nf) = 0x01200000; // Syncall
-		*(uint32_t*)(nf+4) = 0xFF8859EA;
-		NetworkMessageOut(nf, 8);
+		nf[0] = 0x01200000; // Syncall
+		NetworkMessageOut();
 		break;
 	case 7:
 		if(dcpuid) {
@@ -641,6 +642,7 @@ _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdLine, int nC
 	LoadString(hInstance, IDS_APP_TITLE, szTitle, MAX_LOADSTRING);
 	LoadString(hInstance, IDC_ICIC, szWindowClass, MAX_LOADSTRING);
 	netbuff = (unsigned char *)malloc(8192);
+	msgbuff = (unsigned char *)malloc(2048);
 	MyRegisterClass(hInstance);
 	if (!InitInstance (hInstance, nCmdShow)) {
 		return FALSE;
@@ -789,6 +791,7 @@ _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdLine, int nC
 		free(objlist);
 	}
 	free(netbuff);
+	free(msgbuff);
 	if(lpddclp) lpddclp->Release();
 	if(lpddback) lpddback->Release();
 	if(lpdd7) lpdd7->Release();

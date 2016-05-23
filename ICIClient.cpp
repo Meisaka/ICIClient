@@ -461,6 +461,7 @@ int Object_Create(int type)
 		SetRect(&nobj->srect,0,0,512,512);
 		break;
 	}
+	if(nobj->rvstate) ZeroMemory(nobj->rvstate, nobj->rvsize);
 	ddsd.dwFlags = DDSD_CAPS | DDSD_WIDTH | DDSD_HEIGHT;
 	hr = lpdd7->CreateSurface(&ddsd, &nobj->lpddofs, NULL);
 
@@ -895,13 +896,27 @@ int LEMRaster(NyaLEM *lem, uint16_t *ram, unsigned int height, unsigned int widt
 	int dn;
 	dn = 0;
 
-	if(lem->status & 8) {
-		ctk = GetTickCount();
-		if(ctk < lem->TTI) return 1;
-		lem->status = 5;
-	}
-	if(lem->status == 0x0010) {
-		return 1;
+	ctk = GetTickCount();
+	switch(lem->status) {
+	case 0:
+		lem->status = 1;
+		dn = 2;
+		lem->TTI = ctk + 2500;
+		break;
+	case 1:
+		dn = 2;
+		if(ctk >= lem->TTI) {
+			lem->status = 4;
+			if(!lem->dspmem) lem->dspmem = 4;
+		}
+		break;
+	case 4:
+	case 6:
+		dn = 0;
+		break;
+	default:
+		lem->status = 0;
+		dn = 1;
 	}
 	if(lem->fontmem) {
 		lclfont = ram + lem->fontmem;
@@ -909,20 +924,8 @@ int LEMRaster(NyaLEM *lem, uint16_t *ram, unsigned int height, unsigned int widt
 		lclfont = deffont;
 	}
 
-	ctk = GetTickCount();
-	if(lem->status == 1) {
-		lem->status = 9;
-		dn = 2;
-		lem->TTI = ctk + 2500;
-	}
-	if((lem->status & 0x0011) == 0) {
-		dn = 4;
-		lem->status = 0x0010;
-	}
-
 	switch(dn) {
 	case 0:
-		
 		for(x = 0; x < 16; x++) {
 			if(lem->palmem) {
 				vtb = ram[(lem->palmem + x) & 0xffff];
@@ -934,7 +937,6 @@ int LEMRaster(NyaLEM *lem, uint16_t *ram, unsigned int height, unsigned int widt
 			vta |= (((vtb & 0x000f00) << 8) | ((vtb & 0x000f00) << 12));
 			ccpal[x] = vta;
 		}
-
 		vta = ccpal[lem->border & 0x0f];
 		yo = 0;
 		for(y = 96+12; y > 0; y--) {
@@ -943,10 +945,8 @@ int LEMRaster(NyaLEM *lem, uint16_t *ram, unsigned int height, unsigned int widt
 			}
 			yo += pitch;
 		}
-
 		yo = 0;
 		vmmp = lem->dspmem;
-		//vmmp = 0;
 		if(ctk > lem->TTFlip || lem->TTFlip > ctk + 10000) {
 			lem->status ^= 2;
 			lem->TTFlip = ctk + 800;
@@ -958,7 +958,6 @@ int LEMRaster(NyaLEM *lem, uint16_t *ram, unsigned int height, unsigned int widt
 			for(y = 8; y > 0; y--) {
 				for(x = 0; x < 32; x++) {
 					vtw = ram[(uint16_t)(vmmp + x)];
-					//vtw = lem->cachedisp[vmmp + x];
 					clb = ccpal[(vtw >> 8) & 0x0f];
 					clf = ccpal[(vtw >> 12) & 0x0f];
 					if((vtw & 0x0080) && (lem->status & 2))

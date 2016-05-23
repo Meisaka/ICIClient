@@ -28,6 +28,7 @@ static const char * LICTXT =
 // Windows headers
 #include <windows.h>
 #include <WinSock2.h>
+#include <WS2tcpip.h>
 
 #include <stdlib.h>
 #include <malloc.h>
@@ -35,7 +36,17 @@ static const char * LICTXT =
 #include <stdarg.h>
 #include <tchar.h>
 #include <stdio.h>
+#include <string.h>
 #include <stdint.h>
+
+#ifdef WIN32
+int snprintf(char * buf, size_t len, const char * fmt, ...)
+{
+	va_list va;
+	va_start(va, fmt);
+	return vsnprintf(buf, len, fmt, va);
+}
+#endif
 
 extern "C" {
 #include <ddraw.h>
@@ -66,11 +77,14 @@ static int dragon = -1;
 
 static SOCKET lcs;
 static bool unet;
-static sockaddr_in remokon;
+static union msockaddr {
+	sockaddr sa;
+	sockaddr_in ip;
+	sockaddr_in6 ip6;
+} remokon;
 static unsigned char *netbuff;
 static unsigned char *msgbuff;
 static uint32_t keybid = 0;
-static uint32_t nyaid = 0;
 static uint32_t dcpuid = 0;
 static uint32_t updates = 0;
 static int lookups = 0;
@@ -115,7 +129,24 @@ struct NyaLEM {
 	DWORD TTI;
 	DWORD TTFlip;
 	int status;
-} MyStdDisp;
+};
+
+struct clsobj {
+	uint32_t id;
+	uint32_t cid;
+	char * name;
+	int rec;
+	void * rvstate;
+	void * svlstate;
+	size_t rvsize;
+	LPDIRECTDRAWSURFACE7 lpddofs;
+	RECT rect;
+	RECT srect;
+	POINT scrn;
+};
+
+static clsobj **objlist = NULL;
+static int objcount = 0;
 
 ATOM				MyRegisterClass(HINSTANCE hInstance);
 BOOL				InitInstance(HINSTANCE, int);
@@ -134,7 +165,7 @@ struct imva_nvstate {
 	uint32_t blink_time;
 	uint32_t fgcolor;
 	uint32_t bgcolor;
-} MyIMVA;
+};
 
 /* how we access memory */
 #define IMVA_RD(m,a)  (m[a])
@@ -201,6 +232,7 @@ void imva_interrupt(struct imva_nvstate *imva, uint16_t *msg)
  */
 int imva_raster(struct imva_nvstate *imva, uint16_t *ram, uint32_t *rgba, uint32_t slack)
 {
+	imva_colors(imva);
 	uint32_t bg, fg;
 	uint16_t raddr, ova, ovo, ove;
 	bg = imva->bgcolor;
@@ -273,6 +305,7 @@ void LogMessage(const char *fmt, ...) {
 int NetworkClose()
 {
 	uint32_t i;
+	int k;
 	i = WSAGetLastError();
 	shutdown(lcs, SD_BOTH);
 	closesocket(lcs);
@@ -281,9 +314,14 @@ int NetworkClose()
 	else LogMessage("Disconnected\n");
 
 	keybid = 0;
-	nyaid = 0;
 	lookups = 0;
 	updates = 0;
+	for(k = 0; k < objcount; k++) {
+		clsobj *kobj = objlist[k];
+		if(kobj) {
+			kobj->id = 0;
+		}
+	}
 	return 0;
 }
 
@@ -372,27 +410,11 @@ int NetControlUpdate()
 	case 7:
 		if(dcpuid) {
 			lookups++;
-			ResetCPU();
 		}
 		break;
 	}
 	return 0;
 }
-
-struct clsobj {
-	uint32_t id;
-	char * name;
-	int rec;
-	void * rvstate;
-	void * svlstate;
-	LPDIRECTDRAWSURFACE7 lpddofs;
-	RECT rect;
-	RECT srect;
-	POINT scrn;
-};
-
-static clsobj **objlist = NULL;
-static int objcount = 0;
 
 int Object_Create(int type)
 {
@@ -410,9 +432,10 @@ int Object_Create(int type)
 		if(!objlist[i]) break;
 	}
 	if(i >= objcount) return -1;
-	objlist[i] = (clsobj*)malloc(sizeof(clsobj));
-	ZeroMemory(objlist[i], sizeof(clsobj));
-	objlist[i]->rec = type;
+	clsobj *nobj;
+	nobj = objlist[i] = (clsobj*)malloc(sizeof(clsobj));
+	ZeroMemory(nobj, sizeof(clsobj));
+	nobj->rec = type;
 	DDSURFACEDESC2 ddsd;
 	HRESULT hr;
 	ZeroMemory(&ddsd, sizeof(DDSURFACEDESC2));
@@ -422,33 +445,37 @@ int Object_Create(int type)
 	ddsd.dwWidth = 512;
 	switch(type) {
 	case 0:
-		SetRect(&objlist[i]->srect,0,0,140,108);
+		SetRect(&nobj->srect,0,0,140,108);
 		ddsd.dwHeight = 128;
 		ddsd.dwWidth = 256;
+		nobj->rvstate = malloc((nobj->rvsize = sizeof(NyaLEM)));
+		nobj->cid = 0x5002;
 		break;
 	case 1:
-		SetRect(&objlist[i]->srect,0,0,320,200);
+		SetRect(&nobj->srect,0,0,320,200);
 		ddsd.dwHeight = 256;
+		nobj->rvstate = malloc((nobj->rvsize = sizeof(imva_nvstate)));
+		nobj->cid = 0x5005;
 		break;
 	default:
-		SetRect(&objlist[i]->srect,0,0,512,512);
+		SetRect(&nobj->srect,0,0,512,512);
 		break;
 	}
 	ddsd.dwFlags = DDSD_CAPS | DDSD_WIDTH | DDSD_HEIGHT;
-	hr = lpdd7->CreateSurface(&ddsd, &objlist[i]->lpddofs, NULL);
+	hr = lpdd7->CreateSurface(&ddsd, &nobj->lpddofs, NULL);
 
-	SetRect(&objlist[i]->rect,0,0,objlist[i]->srect.right*2,objlist[i]->srect.bottom*2);
+	SetRect(&nobj->rect,0,0,nobj->srect.right*2,nobj->srect.bottom*2);
 	return i;
 }
 
 int Reconnect() {
 	int crs;
-	if(!remokon.sin_addr.S_un.S_addr)
+	if(!remokon.sa.sa_family)
 		return -1;
 	if(unet) {
 		NetworkClose();
 	}
-	lcs = socket(AF_INET, SOCK_STREAM, 0);
+	lcs = socket(remokon.sa.sa_family, SOCK_STREAM, 0);
 	if(lcs == INVALID_SOCKET) {
 		return WSAGetLastError();
 	}
@@ -456,7 +483,7 @@ int Reconnect() {
 	if(setsockopt(lcs, IPPROTO_TCP, TCP_NODELAY, (char*)&i, sizeof(int)) < 0) {
 		return WSAGetLastError();
 	}
-	crs = connect(lcs, (struct sockaddr*)&remokon, sizeof(struct sockaddr_in));
+	crs = connect(lcs, &remokon.sa, sizeof(remokon));
 	if(crs < 0) {
 		NetworkClose();
 		return crs;
@@ -468,16 +495,32 @@ int Reconnect() {
 
 int Connect(const char *addr, int port) {
 	int crs;
+	addrinfo hint;
+	addrinfo *res, *ritr;
+	char sport[16];
+	bool found = false;
 	if(unet) {
 		NetworkClose();
 	}
-	ZeroMemory(&remokon, sizeof(sockaddr_in));
-	remokon.sin_addr.S_un.S_addr = inet_addr(addr);
-	if(!remokon.sin_addr.S_un.S_addr)
-		return -1;
-	remokon.sin_family = AF_INET;
-	remokon.sin_port = htons((u_short)port);
-	lcs = socket(AF_INET, SOCK_STREAM, 0);
+	ZeroMemory(&remokon, sizeof(remokon));
+	ZeroMemory(&hint, sizeof(addrinfo));
+	snprintf(sport, 16, "%u", (uint16_t)port);
+	hint.ai_family = AF_INET;
+	hint.ai_protocol = IPPROTO_TCP;
+	hint.ai_socktype = SOCK_STREAM;
+	getaddrinfo(addr, sport, &hint, &res);
+	ritr = res;
+	while(ritr) {
+		size_t la;
+		la = ritr->ai_addrlen;
+		if(la > sizeof(remokon)) la = sizeof(remokon);
+		memcpy(&remokon, ritr->ai_addr, la);
+		found = true;
+		break;
+	}
+	freeaddrinfo(res);
+	if(!found) return -1;
+	lcs = socket(remokon.sa.sa_family, SOCK_STREAM, 0);
 	if(lcs == INVALID_SOCKET) {
 		return WSAGetLastError();
 	}
@@ -485,7 +528,7 @@ int Connect(const char *addr, int port) {
 	if(setsockopt(lcs, IPPROTO_TCP, TCP_NODELAY, (char*)&i, sizeof(int)) < 0) {
 		return WSAGetLastError();
 	}
-	crs = connect(lcs, (struct sockaddr*)&remokon, sizeof(struct sockaddr_in));
+	crs = connect(lcs, &remokon.sa, sizeof(remokon));
 	if(crs < 0) {
 		NetworkClose();
 		return crs;
@@ -495,6 +538,18 @@ int Connect(const char *addr, int port) {
 	return 0;
 }
 
+void assign_id(uint32_t clazz, uint32_t id)
+{
+	int k;
+	for(k = 0; k < objcount; k++) {
+		clsobj *kobj = objlist[k];
+		if(kobj && !kobj->id && kobj->cid == clazz) {
+			kobj->id = id;
+			return;
+		}
+	}
+}
+
 int NetworkMessageIn(unsigned char *in, size_t len)
 {
 	// data
@@ -502,6 +557,7 @@ int NetworkMessageIn(unsigned char *in, size_t len)
 	uint32_t ml;
 	uint16_t mc;
 	uint32_t i, l;
+	int k;
 	uint32_t *mi = (uint32_t*)in;
 	uint16_t *mw = (uint16_t*)in;
 	if(*(uint32_t*)(in+4+len) != 0xFF8859EA) {
@@ -512,25 +568,63 @@ int NetworkMessageIn(unsigned char *in, size_t len)
 	ml = mh & 0x1fff;
 	switch(mc) {
 	case 0xE0:
-		l = (ml - 6);
-		if((mw[4]) + (l) < 0x20000) {
-			memcpy(virtmeme+(mw[4]/2), mw+5, l);
-			updates++;
+	{
+		uint32_t vsa = 0;
+		uint16_t vrl = 0;
+		uint8_t *inh = in + 8;
+		uint8_t *ine = in + 4 + ml;
+		uint8_t *omh = (uint8_t*)virtmeme;
+		while(inh < ine) {
+			if(vrl) {
+				omh[vsa] = *inh;
+				vrl--; inh++; vsa++;
+				vsa &= 0x1ffff;
+			} else {
+				vsa = inh[0] | (inh[1] << 8);
+				vrl = inh[2] | (inh[3] << 8);
+				inh += 4;
+				if(vsa >= 0x20000) {
+					LogMessage("memsync invalid address\n");
+					break;
+				}
+			}
 		}
+	}
 		break;
 	case 0xE1:
-		l = (ml - 8);
-		if((mi[2] & 0x1ffff) + l < 0x20000) {
-			memcpy(virtmeme+(mi[2]/2), mi+3, l);
-			updates++;
+	{
+		uint32_t vsa = 0;
+		uint16_t vrl = 0;
+		uint8_t *inh = in + 8;
+		uint8_t *ine = in + 4 + ml;
+		uint8_t *omh = (uint8_t*)virtmeme;
+		while(inh < ine) {
+			if(vrl) {
+				omh[vsa] = *inh;
+				vrl--; inh++; vsa++;
+				vsa &= 0x1ffff;
+			} else {
+				vsa = inh[0] | (inh[1] << 8) | (inh[2] << 16) | (inh[3] << 24);
+				vrl = inh[4] | (inh[5] << 8);
+				inh += 6;
+				if(inh < ine && vsa >= 0x20000) {
+					LogMessage("memsync invalid address %04x\n", vsa);
+					break;
+				}
+			}
 		}
+	}
 		break;
 	case 0xE2:
 		l = (ml - 4);
 		LogMessage("RV sync [%08x] +%d\n", mi[1], l);
-		if(mi[1] == nyaid && l <= sizeof(struct NyaLEM)) {
-			LogMessage("sync copy\n");
-			memcpy(&MyStdDisp, mi+2, l);
+		for(k = 0; k < objcount; k++) {
+			clsobj *kobj = objlist[k];
+			if(!kobj) continue;
+			if(mi[1] == kobj->id && l <= kobj->rvsize) {
+				LogMessage("sync copy\n");
+				memcpy(kobj->rvstate, mi+2, l);
+			}
 		}
 		break;
 	case 0xE3:
@@ -542,6 +636,7 @@ int NetworkMessageIn(unsigned char *in, size_t len)
 		LogMessage("Obj List\n");
 		for(i = 0; i < (ml / 8); i++) {
 			LogMessage("Obj [%08x]: %x\n", mi[1+(i*2)], mi[2+(i*2)]);
+			assign_id(mi[2+(i*2)], mi[1+(i*2)]);
 			switch(mi[2+(i*2)]) {
 			case 0x3001:
 				dcpuid = mi[1+(i*2)];
@@ -552,7 +647,6 @@ int NetworkMessageIn(unsigned char *in, size_t len)
 				LogMessage("Keyboard [%08x]\n", mi[1+(i*2)]);
 				break;
 			case 0x5002:
-				nyaid = mi[1+(i*2)];
 				LogMessage("Nya LEM [%08x]\n", mi[1+(i*2)]);
 				break;
 			}
@@ -681,15 +775,6 @@ _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdLine, int nC
 
 	Object_Create(1);
 	Object_Create(0);
-	MyStdDisp.status = 1;
-	MyStdDisp.dspmem = 4;
-	MyStdDisp.fontmem = 0;
-	MyStdDisp.palmem = 0;
-	imva_reset(&MyIMVA);
-	MyIMVA.base = 0x8000;
-	MyIMVA.ovbase = 1;
-	MyIMVA.ovoffset = 41;
-	MyIMVA.ovmode = 0x0035;
 
 	for(i = 0; i < 16; i++) {
 		virtmeme[20+i] = (i << 12) | (i << 8);
@@ -799,7 +884,7 @@ _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdLine, int nC
 	return (int) msg.wParam;
 }
 
-int LEMRaster(NyaLEM *lem, unsigned int height, unsigned int width, unsigned int *surface, unsigned int pitch)
+int LEMRaster(NyaLEM *lem, uint16_t *ram, unsigned int height, unsigned int width, unsigned int *surface, unsigned int pitch)
 {
 	unsigned int x,y,sl,yo,yu;
 	unsigned int vtw, vtb, vta;
@@ -819,7 +904,7 @@ int LEMRaster(NyaLEM *lem, unsigned int height, unsigned int width, unsigned int
 		return 1;
 	}
 	if(lem->fontmem) {
-		lclfont = virtmeme + lem->fontmem;
+		lclfont = ram + lem->fontmem;
 	} else {
 		lclfont = deffont;
 	}
@@ -840,7 +925,7 @@ int LEMRaster(NyaLEM *lem, unsigned int height, unsigned int width, unsigned int
 		
 		for(x = 0; x < 16; x++) {
 			if(lem->palmem) {
-				vtb = virtmeme[(lem->palmem + x) & 0xffff];
+				vtb = ram[(lem->palmem + x) & 0xffff];
 			} else {
 				vtb = defpal[x];
 			}
@@ -872,7 +957,7 @@ int LEMRaster(NyaLEM *lem, unsigned int height, unsigned int width, unsigned int
 			vta = 0x0001;
 			for(y = 8; y > 0; y--) {
 				for(x = 0; x < 32; x++) {
-					vtw = virtmeme[(uint16_t)(vmmp + x)];
+					vtw = ram[(uint16_t)(vmmp + x)];
 					//vtw = lem->cachedisp[vmmp + x];
 					clb = ccpal[(vtw >> 8) & 0x0f];
 					clf = ccpal[(vtw >> 12) & 0x0f];
@@ -899,11 +984,11 @@ int LEMRaster(NyaLEM *lem, unsigned int height, unsigned int width, unsigned int
 		yo = 0;
 		vmmp = 0;
 		vtb = 0x008000;
-		vtw = virtmeme[vmmp++];
+		vtw = ram[vmmp++];
 		for(y = height; y > 0; y--) {
 			for(x = 0; x < width; x++) {
 				(surface)[x+yo] = ((vtw) & vtb) ? 0x00FFFFFF : 0 ;
-				if(!(vtb >>= 1)) {vtb = 0x008000; vtw = virtmeme[vmmp++];}
+				if(!(vtb >>= 1)) {vtb = 0x008000; vtw = ram[vmmp++];}
 			}
 			yo += pitch;
 		}
@@ -965,6 +1050,7 @@ int UpdateDisplay()
 	int i;
 	for(i = 0; i < objcount; i++) {
 		if((!objlist[i]) || (!objlist[i]->lpddofs)) continue;
+		if(!objlist[i]->rvstate) continue;
 		ZeroMemory(&SDSC, sizeof(DDSURFACEDESC2));
 		SDSC.dwSize = sizeof(DDSURFACEDESC2);
 		hr = objlist[i]->lpddofs->Lock(NULL, &SDSC,DDLOCK_WAIT | DDLOCK_NOSYSLOCK,0);
@@ -973,10 +1059,10 @@ int UpdateDisplay()
 		}
 		switch(objlist[i]->rec) {
 		case 0:
-			LEMRaster(&MyStdDisp, SDSC.dwHeight, SDSC.dwWidth, (unsigned int *)SDSC.lpSurface, SDSC.lPitch >> 2);
+			LEMRaster((NyaLEM*)objlist[i]->rvstate, virtmeme, SDSC.dwHeight, SDSC.dwWidth, (unsigned int *)SDSC.lpSurface, SDSC.lPitch >> 2);
 			break;
 		case 1:
-			imva_raster(&MyIMVA, virtmeme, (unsigned int *)SDSC.lpSurface, (SDSC.lPitch >> 2) - (320));
+			imva_raster((imva_nvstate*)objlist[i]->rvstate, virtmeme, (unsigned int *)SDSC.lpSurface, (SDSC.lPitch >> 2) - (320));
 			break;
 		}
 		objlist[i]->lpddofs->Unlock(NULL);
@@ -1071,7 +1157,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 		case 0x10: WriteKey(0x90, 0); break; // Shift
 		case 0x11: WriteKey(0x91, 0); ctrlflag = 1; break; // Control
 		//case 0x20: WriteKey(0x20, 0); break; // Space (ASCII)
-		case 0x9: for(i = 0; i < 8; i++) WriteKey('f', 0); break;
+		case 0x9: WriteKey(9, 0); break;
 		case 0x25: WriteKey(0x82, 0); break; // LEFT
 		case 0x26: WriteKey(0x80, 0); break; // UP
 		case 0x27: WriteKey(0x83, 0); break; // RIGHT
@@ -1093,7 +1179,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 		case 0x10: WriteKey(0x90, 1); break; // Shift
 		case 0x11: WriteKey(0x91, 1); ctrlflag = 0; break; // Control
 		//case 0x20: WriteKey(0x20, 0); break; // Space (ASCII)
-		case 0x9: for(i = 0; i < 8; i++) WriteKey('f', 1); break;
+		case 0x9: WriteKey(9, 1); break;
 		case 0x25: WriteKey(0x82, 1); break; // LEFT
 		case 0x26: WriteKey(0x80, 1); break; // UP
 		case 0x27: WriteKey(0x83, 1); break; // RIGHT
@@ -1239,7 +1325,7 @@ INT_PTR CALLBACK DlgConnect(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPara
 	case WM_COMMAND:
 		if (LOWORD(wParam) == IDOK || LOWORD(wParam) == IDCANCEL) {
 			if( LOWORD(wParam) == IDOK ) {
-				char ipstr[32];
+				char ipstr[256];
 				int port;
 				BOOL bport = FALSE;
 				GetDlgItemTextA(hDlg, IDC_IPADDRESS1, ipstr, sizeof(ipstr));

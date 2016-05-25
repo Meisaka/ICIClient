@@ -21,14 +21,33 @@
     <ClInclude Include="targetver.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="ici.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <Library Include="..\..\..\..\Microsoft DirectX SDK (August 2009)\Lib\x86\ddraw.lib" />
-    <Library Include="..\..\..\..\Microsoft DirectX SDK (August 2009)\Lib\x86\dxguid.lib" />
-    <Library Include="..\..\..\..\WindowSDK\v7.1\Lib\WS2_32.Lib" />
+    <Library Include="..\SDL2-2.0.4\lib\x86\SDL2.lib" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="ICIClient.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="ui\imgui.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="ui\imgui_draw.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="ui\imgui_demo.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="gl_impl.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="console.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="displays.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

@@ -165,7 +165,7 @@ struct ItemFree<clsobj> {
 	}
 };
 
-template<class T, class K = ItemFree<T>> struct ItemTable {
+template<class T, class K = ItemFree<T> > struct ItemTable {
 	T **list;
 	int count;
 	int limit;
@@ -767,7 +767,7 @@ int LIDTextEditCallback(ImGuiTextEditCallbackData *data)
 void RequestNewObject(devclass *dcls)
 {
 	server_object_create(dcls);
-	LogMessage("Add new %s", dcls->name);
+	LogMessage("Add new %s", dcls->name.get());
 	for(int i = 0; i < dcls->instparam.count; i++) {
 		devparameter * dp = dcls->instparam.list[i];
 		if(!(dp->type & PARAM_OPTIONAL) || dp->use) {
@@ -1356,7 +1356,7 @@ int ShowDevMenu()
 			if(!nobj) continue;
 			if(!nobj->iclazz) continue;
 			if(!nobj->iclazz->hasui && !nobj->iclazz->draw) continue;
-			snprintf(wtitle, 256, "%s %04x###dev%X", nobj->iclazz->name, nobj->id, i);
+			snprintf(wtitle, 256, "%s %04x###dev%X", nobj->iclazz->name.get(), nobj->id, i);
 			ImGui::MenuItem(wtitle, 0, &nobj->win);
 			if(!nobj->rvstate) continue;
 		}
@@ -1380,7 +1380,7 @@ void ShowAttachPop(clsobj *aobj, bool mem)
 			if(nobj->id == aobj->id) continue;
 			devclass *ncls = nobj->iclazz;
 			if(ncls) {
-				snprintf(wtitle, 256, "%s [%04x]###IA-%X", nobj->iclazz->name, nobj->id, i);
+				snprintf(wtitle, 256, "%s [%04x]###IA-%X", nobj->iclazz->name.get(), nobj->id, i);
 			} else {
 				snprintf(wtitle, 256, "Class-%04X [%04x]###IA-%X", nobj->cid, nobj->id, i);
 			}
@@ -1417,7 +1417,7 @@ int UpdateDevViewer()
 		} else {
 			for(i = 0; i < clslist.count; i++) {
 				devclass *dcls = clslist.list[i];
-				snprintf(wtitle, 256, "%s###CX%X", dcls->desc? dcls->desc : dcls->name, i);
+				snprintf(wtitle, 256, "%s###CX%X", dcls->desc? dcls->desc.get() : dcls->name.get(), i);
 				if(dcls->instparam.count) {
 					if(ImGui::BeginMenu(wtitle)) {
 						ParamNewPopup(dcls);
@@ -1454,13 +1454,13 @@ int UpdateDevViewer()
 		nobj->rparent = true;
 		devclass *ncls = nobj->iclazz;
 		if(ncls) {
-			snprintf(wtitle, 256, "%s [%04x]###dev%X", nobj->iclazz->name, nobj->id, i);
+			snprintf(wtitle, 256, "%s [%04x]###dev%X", nobj->iclazz->name.get(), nobj->id, i);
 		} else {
 			snprintf(wtitle, 256, "Class-%04X [%04x]###dev%X", nobj->cid, nobj->id, i);
 		}
 		bool isopen = ImGui::TreeNode(wtitle);
 		ImGui::NextColumn();
-		if(ncls && ncls->desc) ImGui::Text("%s", ncls->desc);
+		if(ncls && ncls->desc) ImGui::Text("%s", ncls->desc.get());
 		ImGui::NextColumn();
 		if(isopen) {
 			ImGui::Text("Class"); ImGui::NextColumn();
@@ -1560,7 +1560,7 @@ int UpdateDisplay()
 			}
 		}
 		if(nobj->win && ncls->draw && nobj->memptr) {
-			snprintf(wtitle, 256, "%s [%04X]###win-%x", ncls->desc ? ncls->desc : ncls->name, nobj->id, i);
+			snprintf(wtitle, 256, "%s [%04X]###win-%x", ncls->desc ? ncls->desc.get() : ncls->name.get(), nobj->id, i);
 			float cas = 40.f+20.f*(wo&15);
 			wo++;
 			ImGui::SetNextWindowPos(ImVec2(cas, cas), ImGuiSetCond_Appearing);

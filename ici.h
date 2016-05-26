@@ -8,7 +8,10 @@
 #include <GL/glew.h>
 #include "ui/imgui.h"
 
-typedef int (*ici_rasterfn)(void *imva, uint16_t *ram, uint32_t *rgba, uint32_t slack);
+struct clsobj;
+typedef int (*ici_rasterfn)(void *state, uint16_t *ram, uint32_t *rgba, uint32_t slack);
+typedef int (*ici_command)(clsobj *state);
+
 int imva_raster(void *vimva, uint16_t *ram, uint32_t *rgba, uint32_t slack);
 int LEMRaster(void *vlem, uint16_t *ram, uint32_t *surface, uint32_t pitch);
 
@@ -31,6 +34,10 @@ void StartGUIConsole();
 void ShowUIConsole();
 void DrawUIConsole();
 void LogMessage(const char *fmt, ...);
+int UpdateDevViewer();
+int ShowDevMenu();
+int UpdateDisplay();
+void InitKeyMap();
 
 #ifdef WIN32
 int snprintf(char * buf, size_t len, const char * fmt, ...);

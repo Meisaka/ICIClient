@@ -73,38 +73,201 @@ static union msockaddr {
 static unsigned char *netbuff;
 static unsigned char *msgbuff;
 static uint32_t keybid = 0;
-static uint32_t dcpuid = 0;
 static uint32_t updates = 0;
 static int lookups = 0;
+extern bool uiconsole_open;
+bool ui_vkeyboard = false;
+bool ui_showdev = false;
+int net_listobj = 0;
+int net_listclass = 0;
+int net_listheir = 0;
 
-static unsigned short virtmeme[0x10000];
+template<typename T>
+class Ptr {
+public:
+	T *p;
+	Ptr() { p = 0; }
+	Ptr(T *n) { p = n; }
+	~Ptr() { if(p) free(p); p = 0; }
+	static T* make() {
+		T* t = (T*)malloc(sizeof(T));
+		if(t) ZeroMemory(t, sizeof(T));
+		return t;
+	}
+	static T* make_array(size_t c) {
+		T* t = (T*)malloc(sizeof(T) * c);
+		if(t) ZeroMemory(t, sizeof(T) * c);
+		return t;
+	}
+	T* get() { return p; }
+	T* operator=(T *n) { return (p = n); }
+	T* operator=(T &n) { return (p = &n); }
+	operator bool() const { return (p!=(T*)0); }
+	T& operator *() { return *p; }
+	const T& operator *() const { return *p; }
+	T& operator[](size_t n) { return p[n]; }
+	const T& operator[](size_t n) const { return p[n]; }
+	T& operator->() { return *p; }
+	const T& operator->() const { return *p; }
+	T* operator++() { return ++p; }
+	T* operator++(int) { return p++; }
+	T* operator+(size_t n) const { return p+n; }
+	T* operator+=(size_t n) { return p+=n; }
+	T* operator--() { return --p; }
+	T* operator--(int) { return p--; }
+	T* operator-(size_t n) const { return p-n; }
+	T* operator-=(size_t n) { return p-=n; }
+};
+
+struct devclass;
 
 struct clsobj {
 	uint32_t id;
 	uint32_t cid;
-	char * name;
-	int rec;
+	uint32_t pid;
+	uint32_t mid;
+	uint32_t kid;
+	bool hasleaf;
+	Ptr<char> name;
+	devclass *iclazz;
 	void * rvstate;
 	void * svlstate;
+	clsobj * memptr;
 	size_t rvsize;
 	icitexture uitex;
-	uint32_t *pixbuf;
+	Ptr<uint32_t> pixbuf;
+	ImVec2 uvfar;
+	bool win;
+	bool rparent;
+	~clsobj() {
+		if(rvstate) free(rvstate);
+		if(svlstate) free(svlstate);
+	}
+	void do_reset()
+	{
+		this->id = 0;
+		this->cid = 0;
+		this->pid = 0;
+		this->kid = 0;
+		this->hasleaf = false;
+	}
+};
+
+template<typename T>
+struct ItemFree {
+	static void Free(T *m) { free(m); }
+};
+template<>
+struct ItemFree<clsobj> {
+	static void Free(clsobj *m) {
+		m->~clsobj();
+		free(m);
+	}
+};
+
+template<class T, class K = ItemFree<T>> struct ItemTable {
+	T **list;
+	int count;
+	int limit;
+	ItemTable() {
+		list = NULL;
+		count = limit = 0;
+	}
+	int AddItem(T *item)
+	{
+		int i;
+		if(!list) {
+			i = 64;
+			void *mem = malloc(i * sizeof(T*));
+			if(!mem) return -1;
+			ZeroMemory(mem, i * sizeof(T*));
+			list = (T**)mem;
+			limit = i;
+		} else if(count >= limit) {
+			i = count * 2;
+			void *mem = malloc(i * sizeof(T*));
+			if(!mem) return -1;
+			memcpy(mem, list, count * sizeof(T*));
+			list = (T**)mem;
+			limit = i;
+		}
+		list[count] = item;
+		return count++;
+	}
+	int AddItem(Ptr<T> &item) { return AddItem(item.get); }
+	T* RemoveItem(int idx)
+	{
+		if(!list || !count || !(idx < count)) return NULL;
+		T *item = list[idx];
+		count--;
+		int i;
+		for(i = idx; i < count; i++) {
+			list[i] = list[i+1];
+		}
+		list[i] = NULL;
+		return item;
+	}
+	void DeleteItem(int idx)
+	{
+		T *item = RemoveItem(idx);
+		if(item) K::Free(item);
+	}
+	void Clear()
+	{
+		for(int i = 0; i < count; i++) {
+			K::Free(list[i]);
+		}
+	}
+};
+
+enum EParameter : int {
+	PARAM_INT = 0,
+	PARAM_STR = 1,
+	PARAM_ID = 2,
+	PARAM_LID = 3,
+	PARAM_TYPE_BOOL = 4,
+	PARAM_BOOL = 0x10004,
+	PARAM_OPTIONAL = 0x10000,
+};
+struct devparameter {
+	Ptr<char> name;
+	Ptr<char> buf;
+	int code;
+	int type;
+	int len;
+	bool use;
+	uint64_t ival;
+};
+
+struct devclass {
+	uint32_t cid;
+	Ptr<char> name;
+	Ptr<char> desc;
+	bool hasui;
 	ici_rasterfn draw;
+	ici_command init;
+	ici_command reset;
+	bool iskeyboard;
+	size_t rvsize;
 	int sbw;
 	int sbh;
 	int rendw;
 	int rendh;
-	ImVec2 uvfar;
-	bool win;
+	ItemTable<devparameter> instparam;
 };
 
-static clsobj **objlist = NULL;
-static int objcount = 0;
+static ItemTable<devclass> clslist;
+static ItemTable<clsobj> objlist;
+static clsobj *attachpoint = NULL;
 
-int UpdateDisplay();
-void InitKeyMap();
-extern bool uiconsole_open;
-bool ui_vkeyboard = false;
+static const ImGuiWindowFlags icidefwin =
+	ImGuiWindowFlags_NoResize
+	| ImGuiWindowFlags_NoSavedSettings
+	| ImGuiWindowFlags_ShowBorders;
+
+static const ImGuiWindowFlags iciszwin =
+	ImGuiWindowFlags_NoSavedSettings
+	| ImGuiWindowFlags_ShowBorders;
 
 int NetworkClose()
 {
@@ -120,10 +283,11 @@ int NetworkClose()
 	keybid = 0;
 	lookups = 0;
 	updates = 0;
-	for(k = 0; k < objcount; k++) {
-		clsobj *kobj = objlist[k];
+	net_listclass = net_listobj = net_listheir = 0;
+	for(k = 0; k < objlist.count; k++) {
+		clsobj *kobj = objlist.list[k];
 		if(kobj) {
-			kobj->id = 0;
+			kobj->do_reset();
 		}
 	}
 	return 0;
@@ -164,22 +328,34 @@ int NetworkMessageOut()
 	return 0;
 }
 
-int WriteKey(unsigned char code, int state)
+int server_write_key(unsigned char code, int state)
 {
 	if(!keybid) return -1;
 	*(uint32_t*)(msgbuff) = 0x08000008;
-	*(uint32_t*)(msgbuff+4) = keybid; // TODO ID the keyboard
+	*(uint32_t*)(msgbuff+4) = keybid;
 	*(uint16_t*)(msgbuff+8) = 0x20E7 + state;
 	*(uint16_t*)(msgbuff+10) = code;
 	return NetworkMessageOut();
 }
 
-int ResetCPU()
+int server_reset_cpu(uint32_t dcpuid)
 {
 	if(!unet) return 0;
 	uint32_t *nf = (uint32_t*)msgbuff;
 	if(dcpuid) {
 		nf[0] = 0x02400004;
+		nf[1] = dcpuid;
+		NetworkMessageOut();
+	}
+	return 0;
+}
+
+int server_stop_cpu(uint32_t dcpuid)
+{
+	if(!unet) return 0;
+	uint32_t *nf = (uint32_t*)msgbuff;
+	if(dcpuid) {
+		nf[0] = 0x02500004;
 		nf[1] = dcpuid;
 		NetworkMessageOut();
 	}
@@ -195,84 +371,117 @@ int NetControlUpdate()
 		lookups++;
 		nf[0] = 0x01300000; // List classes
 		NetworkMessageOut();
-	case 1: break;
+	case 1:
+		if(net_listclass > 1) lookups++;
+		break;
 	case 2:
 		lookups++;
 		nf[0] = 0x01100000; // List obj
 		NetworkMessageOut();
-	case 3: break;
+	case 3:
+		if(net_listobj > 1) lookups++;
+		break;
 	case 4:
 		lookups++;
 		nf[0] = 0x01400000; // List Heir
 		NetworkMessageOut();
-	case 5: break;
+	case 5:
+		if(net_listheir > 1) lookups++;
+		break;
 	case 6:
 		lookups++;
 		nf[0] = 0x01200000; // Syncall
 		NetworkMessageOut();
 		break;
 	case 7:
-		if(dcpuid) {
-			lookups++;
+		if(!net_listheir) {
+			net_listheir = 1;
+			nf[0] = 0x01400000; // List Heir
+			NetworkMessageOut();
 		}
 		break;
 	}
 	return 0;
 }
 
-int Object_Create(int type)
+devclass * Class_Register(uint32_t cid, const char *cname, const char *desc)
 {
-	int i;
-	void * mem;
-	if(!objlist) {
-		i = 100;
-		mem = malloc(i * sizeof(clsobj*));
-		if(!mem) return -1;
-		objlist = (clsobj**)mem;
-		ZeroMemory(mem, i * sizeof(clsobj*));
-		objcount = i;
+	devclass *ncls = NULL;
+	for(int i = 0; i < clslist.count; i++) {
+		devclass *fcls = clslist.list[i];
+		if(fcls && (strcmp(fcls->name.get(), cname) == 0)) {
+			ncls = fcls;
+			break;
+		}
 	}
-	for(i = 0; i < objcount; i++) {
-		if(!objlist[i]) break;
+	if(!ncls) {
+		ncls = Ptr<devclass>::make();
+		if(!ncls) return NULL;
+		ncls->name = strdup(cname);
+		clslist.AddItem(ncls);
 	}
-	if(i >= objcount) return -1;
+	if(desc && ncls->desc && (strcmp(ncls->desc.get(), desc) != 0)) {
+		free(ncls->desc.get());
+		ncls->desc = 0;
+	}
+	if(desc) {
+		ncls->desc = strdup(desc);
+	}
+	if(cid) ncls->cid = cid;
+	return ncls;
+}
+
+devclass * GetClassName(const char *name)
+{
+	devclass *ncls = NULL;
+	for(int i = 0; i < clslist.count; i++) {
+		devclass *fcls = clslist.list[i];
+		if(fcls && (strcmp(fcls->name.get(), name) == 0)) {
+			ncls = fcls;
+			break;
+		}
+	}
+	return ncls;
+}
+devclass * GetClassID(uint32_t cid)
+{
+	devclass *ncls = NULL;
+	for(int i = 0; i < clslist.count; i++) {
+		devclass *fcls = clslist.list[i];
+		if(fcls && fcls->cid == cid) {
+			ncls = fcls;
+			break;
+		}
+	}
+	return ncls;
+}
+clsobj * Object_Create(uint32_t cid)
+{
+	if(!cid) return NULL;
+	devclass *ncls = GetClassID(cid);
 	clsobj *nobj;
-	nobj = objlist[i] = (clsobj*)malloc(sizeof(clsobj));
-	ZeroMemory(nobj, sizeof(clsobj));
-	nobj->rec = type;
-	nobj->rendw = nobj->sbw = 512;
-	nobj->rendh = nobj->sbh = 512;
-	switch(type) {
-	case 0:
-		nobj->rendw = 140;
-		nobj->rendh = 108;
-		nobj->sbh = 128;
-		nobj->sbw = 256;
-		nobj->rvstate = malloc((nobj->rvsize = sizeof(NyaLEM)));
-		nobj->draw = LEMRaster;
-		nobj->cid = 0x5002;
-		break;
-	case 1:
-		nobj->rendw = 320;
-		nobj->rendh = 200;
-		nobj->sbh = 256;
-		nobj->rvstate = malloc((nobj->rvsize = sizeof(imva_nvstate)));
-		nobj->draw = imva_raster;
-		nobj->cid = 0x5005;
-		break;
-	default:
-		break;
+	nobj = Ptr<clsobj>::make();
+	if(!nobj) return NULL;
+	if(ncls) {
+		nobj->iclazz = ncls;
+		nobj->cid = ncls->cid;
+		if(ncls->rvsize) {
+			nobj->rvstate = malloc((nobj->rvsize = ncls->rvsize));
+		}
+		if(nobj->rvstate) ZeroMemory(nobj->rvstate, nobj->rvsize);
+		if(ncls->rendw && ncls->rendh) {
+			nobj->win = true;
+			ICIC_CreateHWTexture(&nobj->uitex, ncls->sbw, ncls->sbh);
+			nobj->pixbuf = (uint32_t*)malloc(sizeof(uint32_t) * ncls->sbw * ncls->sbh);
+			nobj->uvfar = ImVec2(ncls->rendw / (float)ncls->sbw, ncls->rendh / (float)ncls->sbh);
+			uint32_t *clsr = nobj->pixbuf.get();
+			for(int c = ncls->sbw * ncls->sbh; c--; *(clsr++) = 0x55000000);
+		}
+	} else {
+		nobj->cid = cid;
 	}
-	if(nobj->rvstate) ZeroMemory(nobj->rvstate, nobj->rvsize);
-	nobj->win = true;
-	ICIC_CreateHWTexture(&nobj->uitex, nobj->sbw, nobj->sbh);
-	nobj->pixbuf = (uint32_t*)malloc(sizeof(uint32_t) * nobj->sbw * nobj->sbh);
-	if(nobj->rendw && nobj->rendh) {
-		nobj->uvfar = ImVec2(nobj->rendw / (float)nobj->sbw, nobj->rendh / (float)nobj->sbh);
-		uint32_t *clsr = nobj->pixbuf;
-		for(int c = nobj->sbw * nobj->sbh; c--; *(clsr++) = 0x55000000);
-	}
-	return i;
+	objlist.AddItem(nobj);
+	return nobj;
 }
 
 int Reconnect() {
@@ -346,15 +555,270 @@ int Connect(const char *addr, int port) {
 	return 0;
 }
 
+/** Attach B to A */
+void server_object_attach(clsobj *a, clsobj *b)
+{
+	if(!unet) return;
+	if(!a || !b) return;
+	uint32_t *nf = (uint32_t*)msgbuff;
+	nf[0] = 0x02200008;
+	nf[1] = a->id;
+	nf[2] = b->id;
+	NetworkMessageOut();
+	return;
+}
+/** Attach B to A */
+void server_object_deattach(clsobj *a, uint32_t idx)
+{
+	if(!unet) return;
+	if(!a) return;
+	uint32_t *nf = (uint32_t*)msgbuff;
+	nf[0] = 0x02300008;
+	nf[1] = a->id;
+	nf[2] = idx;
+	NetworkMessageOut();
+	return;
+}
+
+int isi_text_dec(const char *text, int len, int limit, void *vv, int olen)
+{
+	int cs;
+	int32_t ce;
+	int i;
+	unsigned char *tid = (unsigned char *)vv;
+	int s;
+	s = 0;
+	ce = 0;
+	if(len > limit) len = limit;
+	for(i = 0; i < len; i++) {
+		cs = text[i];
+		if(cs >= '0') {
+			if(cs <= '9') ce = (ce<<6) | (52+cs-'0');
+			else if(cs >= 'A') {
+				if(cs <= 'Z') ce = (ce<<6) | (cs - 'A');
+				else if(cs >= 'a' && cs <= 'z') ce = (ce<<6) | (26+cs-'a');
+				else if(cs == '_') ce = (ce<<6) | 63;
+				else return -1;
+			} else return -1;
+		} else if(cs == '-') ce = (ce<<6) | 62;
+		else return -1;
+		if(i+1 == len) {
+			while((i&3) != 3) {
+				ce <<= 6; i++;
+			}
+		}
+		if((i & 3) == 3) {
+			if(s < olen) tid[s] = ((ce >> 16) & 0xff);
+			if(s+1 < olen) tid[s+1] = ((ce >> 8) & 0xff);
+			if(s+2 < olen) tid[s+2] = ((ce) & 0xff);
+			s += 3;
+			ce = 0;
+		}
+	}
+	return 0;
+}
+
+void server_object_create(devclass * ncls)
+{
+	if(!unet) return;
+	if(!ncls) return;
+	if(!ncls->cid) return;
+	uint32_t *nf = (uint32_t*)msgbuff;
+	nf[1] = ncls->cid;
+	char *pwp = (char*)(nf+2);
+	int apl = 0;
+	for(int i = 0; i < ncls->instparam.count; i++) {
+		devparameter *dp = ncls->instparam.list[i];
+		if(!(dp->type & PARAM_OPTIONAL) || dp->use) {
+			pwp[0] = dp->code;
+			apl+=2;
+			switch(dp->type & 0xffff) {
+			case PARAM_INT:
+			case PARAM_ID:
+				apl += pwp[1] = 4;
+				if(pwp[1]) {
+					memcpy(pwp+2, &dp->ival, pwp[1]);
+				}
+				pwp += 2+pwp[1];
+				break;
+			case PARAM_STR:
+				apl += pwp[1] = strlen(dp->buf.get());
+				if(pwp[1]) {
+					memcpy(pwp+2, dp->buf.get(), pwp[1]);
+				}
+				pwp += 2+pwp[1];
+				break;
+			case PARAM_LID:
+				apl += pwp[1] = 8;
+				isi_text_dec(dp->buf.get(), strlen(dp->buf.get()), 11, &dp->ival, 8);
+				memcpy(pwp+2, &dp->ival, 8);
+				pwp += 2+pwp[1];
+				break;
+			case PARAM_TYPE_BOOL:
+			default:
+				pwp[1] = 0;
+				break;
+			}
+		}
+	}
+	if(apl > 1300) apl = 1300;
+	nf[0] = 0x02000004 + apl;
+	NetworkMessageOut();
+	return;
+}
+
+void process_objects()
+{
+	for(int k = 0; k < objlist.count; k++) {
+		clsobj *kobj = objlist.list[k];
+		if(kobj && !kobj->id) {
+			LogMessage("Invalidated Object %d", k);
+			objlist.RemoveItem(k);
+			k--;
+			continue;
+		}
+	}
+}
+
+void process_classes()
+{
+	for(int k = 0; k < objlist.count; k++) {
+		clsobj *kobj = objlist.list[k];
+		if(kobj && kobj->iclazz) {
+			kobj->cid = kobj->iclazz->cid;
+		}
+	}
+}
+
+void process_heirarchy()
+{
+	for(int k = 0; k < objlist.count; k++) {
+		clsobj *kobj = objlist.list[k];
+		if(kobj->pid) {
+			bool pfound = false;
+			for(int i = 0; i < objlist.count; i++) {
+				clsobj *iobj = objlist.list[i];
+				if(iobj && iobj->id == kobj->pid) {
+					pfound = iobj->hasleaf = true;
+					break;
+				}
+			}
+			if(!pfound) {
+				LogMessage("Invalid Parent [%04X] for [%04X]", kobj->pid, kobj->id);
+				kobj->pid = 0;
+			}
+		}
+		if(kobj && kobj->mid && kobj->iclazz && kobj->iclazz->iskeyboard) {
+			for(int i = 0; i < objlist.count; i++) {
+				clsobj *iobj = objlist.list[i];
+				if(iobj
+					&& iobj->iclazz
+					&& iobj->iclazz->draw
+					&& iobj->pid
+					&& iobj->mid == kobj->mid
+					&& iobj->id != kobj->id) {
+					iobj->kid = kobj->id;
+				}
+			}
+		}
+	}
+}
+
 void assign_id(uint32_t clazz, uint32_t id)
 {
 	int k;
-	for(k = 0; k < objcount; k++) {
-		clsobj *kobj = objlist[k];
+	for(k = 0; k < objlist.count; k++) {
+		clsobj *kobj = objlist.list[k];
 		if(kobj && !kobj->id && kobj->cid == clazz) {
 			kobj->id = id;
 			return;
 		}
+	}
+	clsobj * nobj = Object_Create(clazz);
+	if(nobj) nobj->id = id;
+}
+
+void assign_heirarchy(uint32_t id, uint32_t up, uint32_t down, uint32_t mem)
+{
+	int k;
+	for(k = 0; k < objlist.count; k++) {
+		clsobj *kobj = objlist.list[k];
+		if(kobj && kobj->id == id) {
+			kobj->pid = up;
+			kobj->mid = mem;
+			return;
+		}
+	}
+}
+
+int LIDTextEditCallback(ImGuiTextEditCallbackData *data)
+{
+	if(data->EventFlag & ImGuiInputTextFlags_CallbackCharFilter) {
+		int c = data->EventChar;
+		if(c >= 'A' && c <= 'Z') return 0;
+		if(c >= 'a' && c <= 'z') return 0;
+		if(c >= '0' && c <= '9') return 0;
+		if(c == '-' || c == '_') return 0;
+		return 1;
+	}
+	return 0;
+}
+
+void RequestNewObject(devclass *dcls)
+{
+	server_object_create(dcls);
+	LogMessage("Add new %s", dcls->name);
+	for(int i = 0; i < dcls->instparam.count; i++) {
+		devparameter * dp = dcls->instparam.list[i];
+		if(!(dp->type & PARAM_OPTIONAL) || dp->use) {
+			LogMessage(" .. with param %d", dp->code);
+		}
+	}
+}
+
+void ParamNewPopup(devclass *dcls)
+{
+	if(!dcls->instparam.count) return;
+	char title[128];
+	for(int i = 0; i < dcls->instparam.count; i++) {
+		devparameter * dp = dcls->instparam.list[i];
+		if(dp->type & PARAM_OPTIONAL) {
+			snprintf(title, 128, "##O%X", i);
+			ImGui::Checkbox(title, &dp->use);
+		}
+		if(!(dp->type & PARAM_OPTIONAL) || dp->use) {
+			if(dp->type & PARAM_OPTIONAL) ImGui::SameLine();
+			ImGui::PushItemWidth(150);
+			switch(dp->type & 0xffff) {
+			case PARAM_INT:
+				snprintf(title, 128, "Int###V%X", i);
+				ImGui::InputInt(title, (int*)&dp->ival);
+				break;
+			case PARAM_STR:
+				snprintf(title, 128, "String###V%X", i);
+				ImGui::TextDisabled("STRING INPUT");
+				break;
+			case PARAM_ID:
+				snprintf(title, 128, "ID###V%X", i);
+				ImGui::TextDisabled("ID INPUT");
+				break;
+			case PARAM_LID:
+				snprintf(title, 128, "L-ID###V%X", i);
+				ImGui::InputText(title, dp->buf.get(), 11, ImGuiInputTextFlags_CallbackCharFilter | ImGuiInputTextFlags_CallbackAlways, LIDTextEditCallback, 0);
+				break;
+			case PARAM_TYPE_BOOL:
+				break;
+			default:
+				ImGui::TextDisabled("Unknown Type %d", dp->type & 0xffff);
+				break;
+			}
+			ImGui::PopItemWidth();
+		}
+		ImGui::SameLine();
+		ImGui::Text("(%d) %s", dp->code, dp->name.get());
+	}
+	if(ImGui::Selectable("Create")) {
+		RequestNewObject(dcls);
 	}
 }
 
@@ -369,7 +833,7 @@ int NetworkMessageIn(unsigned char *in, size_t len)
 	uint32_t *mi = (uint32_t*)in;
 	uint16_t *mw = (uint16_t*)in;
 	if(*(uint32_t*)(in+4+len) != 0xFF8859EA) {
-		LogMessage("Network Packet Invalid\n");
+		LogMessage("Network Packet Invalid");
 	}
 	mh = *(uint32_t*)in;
 	mc = (mh >> 20) & 0xfff;
@@ -381,7 +845,16 @@ int NetworkMessageIn(unsigned char *in, size_t len)
 		uint16_t vrl = 0;
 		uint8_t *inh = in + 8;
 		uint8_t *ine = in + 4 + ml;
-		uint8_t *omh = (uint8_t*)virtmeme;
+		uint8_t *omh = 0;
+		for(k = 0; k < objlist.count; k++) {
+			clsobj *kobj = objlist.list[k];
+			if(!kobj) continue;
+			if(mi[1] == kobj->id && kobj->cid < 0x2f00) {
+				omh = (uint8_t*)kobj->rvstate;
+				break;
+			}
+		}
+		if(!omh) break;
 		while(inh < ine) {
 			if(vrl) {
 				omh[vsa] = *inh;
@@ -392,7 +865,7 @@ int NetworkMessageIn(unsigned char *in, size_t len)
 				vrl = inh[2] | (inh[3] << 8);
 				inh += 4;
 				if(vsa >= 0x20000) {
-					LogMessage("memsync invalid address\n");
+					LogMessage("memsync invalid address");
 					break;
 				}
 			}
@@ -405,7 +878,16 @@ int NetworkMessageIn(unsigned char *in, size_t len)
 		uint16_t vrl = 0;
 		uint8_t *inh = in + 8;
 		uint8_t *ine = in + 4 + ml;
-		uint8_t *omh = (uint8_t*)virtmeme;
+		uint8_t *omh = 0;
+		for(k = 0; k < objlist.count; k++) {
+			clsobj *kobj = objlist.list[k];
+			if(!kobj) continue;
+			if(mi[1] == kobj->id && kobj->cid < 0x2f00) {
+				omh = (uint8_t*)kobj->rvstate;
+				break;
+			}
+		}
+		if(!omh) break;
 		while(inh < ine) {
 			if(vrl) {
 				omh[vsa] = *inh;
@@ -416,7 +898,7 @@ int NetworkMessageIn(unsigned char *in, size_t len)
 				vrl = inh[4] | (inh[5] << 8);
 				inh += 6;
 				if(inh < ine && vsa >= 0x20000) {
-					LogMessage("memsync invalid address %04x\n", vsa);
+					LogMessage("memsync invalid address %04x", vsa);
 					break;
 				}
 			}
@@ -425,12 +907,10 @@ int NetworkMessageIn(unsigned char *in, size_t len)
 		break;
 	case 0xE2:
 		l = (ml - 4);
-		LogMessage("RV sync [%08x] +%d\n", mi[1], l);
-		for(k = 0; k < objcount; k++) {
-			clsobj *kobj = objlist[k];
+		for(k = 0; k < objlist.count; k++) {
+			clsobj *kobj = objlist.list[k];
 			if(!kobj) continue;
 			if(mi[1] == kobj->id && l <= kobj->rvsize) {
-				LogMessage("sync copy\n");
 				memcpy(kobj->rvstate, mi+2, l);
 			}
 		}
@@ -441,29 +921,19 @@ int NetworkMessageIn(unsigned char *in, size_t len)
 		break;
 	case 0x200:
 	case 0x201:
-		LogMessage("Obj List\n");
+		LogMessage("Obj List");
 		for(i = 0; i < (ml / 8); i++) {
-			LogMessage("Obj [%08x]: %x\n", mi[1+(i*2)], mi[2+(i*2)]);
+			LogMessage("Obj [%08x]: %x", mi[1+(i*2)], mi[2+(i*2)]);
 			assign_id(mi[2+(i*2)], mi[1+(i*2)]);
-			switch(mi[2+(i*2)]) {
-			case 0x3001:
-				dcpuid = mi[1+(i*2)];
-				LogMessage("DCPU [%08x]\n", mi[1+(i*2)]);
-				break;
-			case 0x5000:
-				keybid = mi[1+(i*2)];
-				LogMessage("Keyboard [%08x]\n", mi[1+(i*2)]);
-				break;
-			case 0x5002:
-				LogMessage("Nya LEM [%08x]\n", mi[1+(i*2)]);
-				break;
-			}
 		}
-		if(mc == 0x201) lookups++;
+		if(mc == 0x201 && net_listobj < 2) {
+			net_listobj = 2;
+			process_objects();
+		}
 		break;
 	case 0x213:
 	case 0x313:
-		LogMessage("Obj Classes\n");
+		LogMessage("Obj Classes");
 		{
 			uint32_t iclass = 0;
 			uint32_t iflag = 0;
@@ -495,7 +965,8 @@ int NetworkMessageIn(unsigned char *in, size_t len)
 						iname[rdpoint] = 0;
 						rdpoint = 0;
 						rdtype = 0;
-						LogMessage("Class [%08x]: F=%x \"%s\" -- %s\n", iclass, iflag, iname, idesc);
+						Class_Register(iclass, iname, idesc);
+						LogMessage("Class [%08x]: F=%x \"%s\" -- %s", iclass, iflag, iname, idesc);
 						iclass = 0;
 						iflag = 0;
 					}
@@ -503,16 +974,55 @@ int NetworkMessageIn(unsigned char *in, size_t len)
 				}
 			}
 		}
-		if(mc == 0x313) lookups++;
+		if(mc == 0x313 && net_listclass < 2) {
+			process_classes();
+			net_listclass = 2;
+		}
 		break;
 	case 0x214:
 	case 0x314:
-		LogMessage("Obj Heirarchy\n");
+		LogMessage("Obj Heirarchy");
 		ml /= 4;
 		for(i = 0; i < ml; i+=4) {
-			LogMessage("Obj [%08x]: U[%08x] D[%08x] M[%08x]\n", mi[1+i], mi[3+i], mi[2+i], mi[4+i]);
+			assign_heirarchy(mi[1+i], mi[3+i], mi[2+i], mi[4+i]);
+			LogMessage("Obj [%08x]: U[%08x] D[%08x] M[%08x]", mi[1+i], mi[3+i], mi[2+i], mi[4+i]);
 		}
-		if(mc == 0x314) lookups++;
+		if(mc == 0x314) {
+			process_heirarchy();
+			net_listheir = 2;
+		}
+		break;
+	case 0x220:
+		if(mi[1]) {
+			LogMessage("server: Object [%04x] Created with class [%04x]", mi[1], mi[2]);
+			assign_id(mi[2], mi[1]);
+		} else {
+			LogMessage("[error] server: %d - Object Create class [%04x]", mi[3], mi[2]);
+		}
+		break;
+	case 0x221:
+		LogMessage("server: Object [%04x] Deleted", mi[1]);
+		break;
+	case 0x222:
+		if(mi[2]) LogMessage("[error] server: %d - Object [%04x] Attach", mi[2], mi[1]);
+		else {
+			LogMessage("server: Object [%04x] Attached", mi[1]);
+			net_listheir = 0;
+		}
+		break;
+	case 0x223:
+		if(mi[2]) LogMessage("[error] server: %d - Object [%04x] Deattach", mi[2], mi[1]);
+		else {
+			LogMessage("server: Object [%04x] Deattached", mi[1]);
+		}
+		break;
+	case 0x224:
+		if(ml > 4) LogMessage("[error] server: Object [%04x] Reset - %d", mi[1], mi[2]);
+		else LogMessage("server: Object [%04x] Reset", mi[1]);
+		break;
+	case 0x225:
+		if(ml > 4) LogMessage("[error] server: Object [%04x] Stop - %d", mi[1], mi[2]);
+		else LogMessage("server: Object [%04x] Stopped", mi[1]);
 		break;
 	default:
 		break;
@@ -520,11 +1030,49 @@ int NetworkMessageIn(unsigned char *in, size_t len)
 	return 0;
 }
 
-static const ImGuiWindowFlags icidefwin =
-	ImGuiWindowFlags_NoCollapse
-	| ImGuiWindowFlags_NoResize
-	| ImGuiWindowFlags_NoSavedSettings
-	| ImGuiWindowFlags_ShowBorders;
+void InitICIClasses()
+{
+	devclass * ncls;
+	devparameter *r;
+	ncls = Class_Register(0, "keyboard", 0);
+	ncls->iskeyboard = true;
+	ncls = Class_Register(0, "rom", 0);
+	r = Ptr<devparameter>::make();
+	r->name = strdup("Size");
+	r->type = PARAM_INT | PARAM_OPTIONAL; r->code = 1;
+	ncls->instparam.AddItem(r);
+	r = Ptr<devparameter>::make();
+	r->name = strdup("Image ID");
+	r->type = PARAM_LID | PARAM_OPTIONAL; r->code = 2;
+	r->buf = Ptr<char>::make_array(16);
+	ncls->instparam.AddItem(r);
+	r = Ptr<devparameter>::make();
+	r->name = strdup("Endian Flip Image");
+	r->type = PARAM_BOOL | PARAM_OPTIONAL; r->code = 3;
+	ncls->instparam.AddItem(r);
+	ncls = Class_Register(0, "disk", 0);
+	r = Ptr<devparameter>::make();
+	r->name = strdup("Image ID");
+	r->type = PARAM_LID; r->code = 1;
+	r->buf = Ptr<char>::make_array(16);
+	ncls->instparam.AddItem(r);
+	ncls = Class_Register(0, "memory_16x64k", 0);
+	ncls->rvsize = sizeof(uint16_t) * 0x10000;
+	ncls = Class_Register(0, "nya_lem", 0);
+	ncls->rendw = 140;
+	ncls->rendh = 108;
+	ncls->sbw = 256;
+	ncls->sbh = 128;
+	ncls->rvsize = sizeof(NyaLEM);
+	ncls->draw = LEMRaster;
+	ncls = Class_Register(0, "imva", 0);
+	ncls->rendw = 320;
+	ncls->rendh = 200;
+	ncls->sbw = 512;
+	ncls->sbh = 256;
+	ncls->rvsize = sizeof(imva_nvstate);
+	ncls->draw = imva_raster;
+}
 
 int ICIMain()
 {
@@ -593,18 +1141,8 @@ int ICIMain()
 	netbuff = (unsigned char *)malloc(8192);
 	msgbuff = (unsigned char *)malloc(2048);
 
-	Object_Create(1);
-	Object_Create(0);
-
-	for(i = 0; i < 16; i++) {
-		virtmeme[20+i] = (i << 12) | (i << 8);
-	}
-	for(i = 0; i < 25; i++) {
-		virtmeme[36+i] = "ICIClient - not connected"[i] | 0xF000;
-	}
+	InitICIClasses();
 	apprun = 1;
-	unsigned short vmmp = 0;
-
 	unet = false;
 	ZeroMemory(&remokon, sizeof(sockaddr_in));
 
@@ -614,6 +1152,7 @@ int ICIMain()
 	zm = zl = zil = zh = 0;
 	bool ui_exit = false;
 	bool ui_connect = false;
+	bool ui_showconnect = false;
 	bool ui_about = false;
 	bool ui_test = false;
 	char serveraddr[256] = "";
@@ -632,9 +1171,15 @@ int ICIMain()
 		ICIC_NewFrame(window);
 		if(ImGui::BeginMainMenuBar()) {
 			if(ImGui::BeginMenu("File")) {
-				if(ImGui::MenuItem("Connect...")) {
-					ui_connect = true;
-					ImGui::SetWindowFocus("Connect");
+				if(unet) {
+					if(ImGui::MenuItem("Disconnect")) {
+						NetworkClose();
+					}
+				} else {
+					if(ImGui::MenuItem("Connect...")) {
+						ui_showconnect = ui_connect = true;
+						ImGui::SetWindowFocus("Connect");
+					}
 				}
 				if(ImGui::MenuItem("Reconnect")) {
 					Reconnect();
@@ -645,7 +1190,9 @@ int ICIMain()
 				ImGui::EndMenu();
 			}
 			if(ImGui::BeginMenu("Control")) {
-				if(ImGui::MenuItem("Reset CPU")) ResetCPU();
+				ImGui::MenuItem("Device List", 0, &ui_showdev);
+				ImGui::Separator();
+				ShowDevMenu();
 				ImGui::EndMenu();
 			}
 			if(ImGui::BeginMenu("Help")) {
@@ -662,9 +1209,10 @@ int ICIMain()
 			ImGui::ShowTestWindow(&ui_test);
 		}
 		if(ui_about) {
+			ImGui::SetNextWindowPosCenter(ImGuiSetCond_Appearing);
 			if(ImGui::Begin("About ICIClient##iciabout", &ui_about, icidefwin)) {
 				ImGui::Indent();
-				ImGui::Text("ICIClient Version 0.8");
+				ImGui::Text("ICIClient Version 0.9");
 				ImGui::Text(CPRTTXT);
 				ImGui::SetWindowSize(ImVec2(ImGui::GetItemRectSize().x * 2.0f, 400.0f), ImGuiSetCond_Appearing);
 				ImGui::Unindent();
@@ -675,16 +1223,19 @@ int ICIMain()
 			ImGui::End();
 		}
 		if(ui_connect) {
+			ImGui::SetNextWindowPosCenter(ImGuiSetCond_Appearing);
+			if(ui_showconnect) ImGui::SetNextWindowFocus();
 			if(ImGui::Begin("Connect", &ui_connect, icidefwin)) {
-				ImGui::SetWindowPos(ImVec2(150, 150), ImGuiSetCond_Appearing);
 				ImGui::PushItemWidth(200);
+				if(ui_showconnect) ImGui::SetKeyboardFocusHere();
 				if(ImGui::InputText("Server", serveraddr, 256, ImGuiInputTextFlags_EnterReturnsTrue)) {
 					if(serverport < 0) serverport = 0;
 					if(serverport > 65535) serverport = 65535;
 					Connect(serveraddr, serverport);
 					ui_connect = false;
 				}
-				ImGui::SliderInt("Port", &serverport, 0, 65535);
+				ImGui::PopItemWidth();
+				ImGui::InputInt("Port", &serverport, 1, 512);
 				if(serverport < 0) serverport = 0;
 				if(serverport > 65535) serverport = 65535;
 				if(ImGui::Button("Connect", ImVec2(100,0))) {
@@ -696,6 +1247,7 @@ int ICIMain()
 					ui_connect = false;
 				}
 			}
+			ui_showconnect = false;
 			ImGui::End();
 		}
 		if(unet) {
@@ -712,7 +1264,7 @@ int ICIMain()
 					} else if(zil < zl) {
 						i = recv(lcs, (char*)(netbuff+zm+zil), zl-zil, 0);
 					} else {
-						LogMessage("Framing Error [0x%08x]: %x\n", *(unsigned int*)netbuff, zil);
+						LogMessage("Framing Error [0x%08x]: %x", *(unsigned int*)netbuff, zil);
 						zm = zil = zl = zh = 0;
 						i = 0;
 					}
@@ -727,7 +1279,7 @@ int ICIMain()
 								if(!zh) {
 									zm = 0; // handle keepalive
 									zl = zil = 0;
-									LogMessage("Net Keepalive\n");
+									LogMessage("Net Keepalive");
 								} else {
 									zl = zh & 0x1fff;
 									if(zl & 3) zl += 4 - (zl & 3);
@@ -754,6 +1306,7 @@ int ICIMain()
 		}
 		NetControlUpdate();
 		UpdateDisplay();
+		UpdateDevViewer();
 		DrawUIConsole();
 		// Rendering
 		{
@@ -764,16 +1317,8 @@ int ICIMain()
 		glClear(GL_COLOR_BUFFER_BIT);
 		ImGui::Render();
 		SDL_GL_SwapWindow(window);
-		vmmp = rand();
 	}
-	if(objlist) {
-		for(i = 0; i < objcount; i++) {
-			if(objlist[i]) {
-				free(objlist[i]);
-			}
-		}
-		free(objlist);
-	}
+	objlist.Clear();
 	free(netbuff);
 	free(msgbuff);
 	SDL_GL_DeleteContext(glcontext);
@@ -802,25 +1347,230 @@ int main(int argc, char**argv, char**env)
 }
 #endif
 
+int ShowDevMenu()
+{
+	char wtitle[256];
+	if(ImGui::BeginMenu("Show Devices")) {
+		for(int i = 0; i < objlist.count; i++) {
+			clsobj *nobj = objlist.list[i];
+			if(!nobj) continue;
+			if(!nobj->iclazz) continue;
+			if(!nobj->iclazz->hasui && !nobj->iclazz->draw) continue;
+			snprintf(wtitle, 256, "%s %04x###dev%X", nobj->iclazz->name, nobj->id, i);
+			ImGui::MenuItem(wtitle, 0, &nobj->win);
+			if(!nobj->rvstate) continue;
+		}
+		ImGui::EndMenu();
+	}
+	return 0;
+}
+
+void ShowAttachPop(clsobj *aobj, bool mem)
+{
+	char wtitle[256];
+	int i;
+	if(!aobj) return;
+	if(ImGui::BeginPopup(mem?"MemAttach":"ItemAttach")) {
+		for(i = 0; i < objlist.count; i++) {
+			clsobj *nobj = objlist.list[i];
+			if(!nobj) continue;
+			if(nobj->pid) continue;
+			if(!mem && nobj->cid < 0x2f00) continue;
+			if(mem && nobj->cid >= 0x2f00) continue;
+			if(nobj->id == aobj->id) continue;
+			devclass *ncls = nobj->iclazz;
+			if(ncls) {
+				snprintf(wtitle, 256, "%s [%04x]###IA-%X", nobj->iclazz->name, nobj->id, i);
+			} else {
+				snprintf(wtitle, 256, "Class-%04X [%04x]###IA-%X", nobj->cid, nobj->id, i);
+			}
+			if(ImGui::Selectable(wtitle)) {
+				LogMessage("Attach [%04X] to [%04X]", nobj->id, aobj->id);
+				server_object_attach(aobj, nobj);
+			}
+		}
+		ImGui::EndPopup();
+	}
+}
+
+int UpdateDevViewer()
+{
+	char wtitle[256];
+	if(!ui_showdev) return 0;
+	ImGui::SetNextWindowPosCenter(ImGuiSetCond_Once);
+	if(!ImGui::Begin("Devices", &ui_showdev, ImVec2(400, 350), -1, iciszwin)) {
+		ImGui::End();
+		return 0;
+	}
+	int pstack[10];
+	int pidstack[10];
+	int pscan = 0;
+	int pidscan = 0;
+	int i;
+	ImGui::Text("Devices List");
+	ImGui::SameLine();
+	if(ImGui::SmallButton("Add New"))
+		ImGui::OpenPopup("ItemAdd");
+	if(ImGui::BeginPopup("ItemAdd")) {
+		if(!unet) {
+			ImGui::TextColored(ImColor(255,10,0), "Not Connected!");
+		} else {
+			for(i = 0; i < clslist.count; i++) {
+				devclass *dcls = clslist.list[i];
+				snprintf(wtitle, 256, "%s###CX%X", dcls->desc? dcls->desc : dcls->name, i);
+				if(dcls->instparam.count) {
+					if(ImGui::BeginMenu(wtitle)) {
+						ParamNewPopup(dcls);
+						ImGui::EndMenu();
+					}
+				} else if(ImGui::Selectable(wtitle)) {
+					RequestNewObject(dcls);
+				}
+			}
+		}
+		ImGui::EndPopup();
+	}
+	ImGui::Separator();
+	ImGui::BeginChild("DeviceLayout", ImVec2(0,-ImGui::GetItemsLineHeightWithSpacing()), false, ImGuiWindowFlags_HorizontalScrollbar);
+	ImGui::Columns(2, "Col List");
+	for(i = 0; pscan || i < objlist.count; i++) {
+		if(pscan && !(i < objlist.count)) {
+			ImGui::TreePop();
+			pscan--;
+			i = pstack[pscan];
+			if(pscan)
+				pidscan = pidstack[pscan];
+			else
+				pidscan = 0;
+			continue;
+		}
+		clsobj *nobj = objlist.list[i];
+		if(!nobj) continue;
+		if(pidscan) {
+			if(nobj->pid != pidscan) continue;
+		} else if(nobj->pid && nobj->pid < nobj->id) {
+			continue;
+		}
+		nobj->rparent = true;
+		devclass *ncls = nobj->iclazz;
+		if(ncls) {
+			snprintf(wtitle, 256, "%s [%04x]###dev%X", nobj->iclazz->name, nobj->id, i);
+		} else {
+			snprintf(wtitle, 256, "Class-%04X [%04x]###dev%X", nobj->cid, nobj->id, i);
+		}
+		bool isopen = ImGui::TreeNode(wtitle);
+		ImGui::NextColumn();
+		if(ncls && ncls->desc) ImGui::Text("%s", ncls->desc);
+		ImGui::NextColumn();
+		if(isopen) {
+			ImGui::Text("Class"); ImGui::NextColumn();
+			ImGui::Text("%04X", nobj->cid); ImGui::NextColumn();
+			if(nobj->mid || (nobj->cid >= 0x3000 && nobj->cid < 0x4000)) {
+				ImGui::Text("Memory ID"); ImGui::NextColumn();
+				if(nobj->mid) {
+					ImGui::Text("%04X", nobj->mid);
+				} else {
+					if(ImGui::Button("Attach Mem")) {
+						ImGui::OpenPopup("MemAttach");
+						attachpoint = nobj;
+					}
+					ShowAttachPop(nobj, true);
+				}
+				ImGui::NextColumn();
+			}
+			if(nobj->kid) {
+				ImGui::Text("Keyboard ID"); ImGui::NextColumn();
+				ImGui::Text("%04X", nobj->kid); ImGui::NextColumn();
+			}
+			if(ncls && ncls->rendw) {
+				ImGui::Text("Size"); ImGui::NextColumn();
+				ImGui::Text("%d x %d", ncls->rendw, ncls->rendh); ImGui::NextColumn();
+			}
+			if(nobj->rvstate) {
+				ImGui::Text("State Storage"); ImGui::NextColumn();
+				ImGui::Text("%d bytes", nobj->rvsize); ImGui::NextColumn();
+				if(ncls && ncls->draw) {
+					ImGui::Text("Window"); ImGui::NextColumn();
+					snprintf(wtitle, 256, "Show###sdev%X", nobj->id, i);
+					ImGui::Checkbox(wtitle, &nobj->win); ImGui::NextColumn();
+				}
+			}
+			if(nobj->cid >= 0x3000 && nobj->cid < 0x4000) {
+				ImGui::Text("Control"); ImGui::NextColumn();
+				if(ImGui::SmallButton("Reset")) {
+					server_reset_cpu(nobj->id);
+				}
+				ImGui::SameLine();
+				if(ImGui::SmallButton("Stop")) {
+					server_stop_cpu(nobj->id);
+				}
+				ImGui::NextColumn();
+			}
+			if(nobj->cid > 0x2f00) {
+				if(!nobj->hasleaf || (nobj->cid >= 0x4000 && nobj->cid < 0x5000)) {
+					ImGui::Text("Attachment"); ImGui::NextColumn();
+					if(ImGui::SmallButton("Attach")) {
+						ImGui::OpenPopup("ItemAttach");
+						attachpoint = nobj;
+					}
+					ShowAttachPop(nobj, false);
+					ImGui::NextColumn();
+				}
+			}
+			if(nobj->id && nobj->hasleaf) {
+				pstack[pscan] = i;
+				pidstack[pscan] = pidscan;
+				i = -1;
+				pscan++;
+				pidscan = nobj->id;
+				continue;
+			}
+			ImGui::TreePop();
+		}
+	}
+	ImGui::Columns();
+	ImGui::EndChild();
+	
+	ImGui::End();
+	return 0;
+}
+
 int UpdateDisplay()
 {
-	int i;
+	int i, wo;
 	char wtitle[256];
 	ui_vkeyboard = false;
-	for(i = 0; i < objcount; i++) {
-		clsobj *nobj = objlist[i];
-		if((!nobj)) continue;
+	wo = 0;
+	for(i = 0; i < objlist.count; i++) {
+		clsobj *nobj = objlist.list[i];
+		if(!nobj) continue;
+		devclass *ncls = nobj->iclazz;
+		if(!ncls) continue;
 		if(!nobj->rvstate) continue;
-		snprintf(wtitle, 256, "Output###display-%x", i);
-		if(nobj->win) {
-			if(ImGui::Begin(wtitle, &nobj->win, icidefwin)) {
-				if(nobj->draw) {
-					nobj->draw(nobj->rvstate, virtmeme, nobj->pixbuf, nobj->sbw);
-					ICIC_UpdateHWTexture(&nobj->uitex, nobj->sbw, nobj->sbh, nobj->pixbuf);
-					ImGui::Image(&nobj->uitex, ImVec2(nobj->rendw*2, nobj->rendh*2), ImVec2(0,0), nobj->uvfar);
+		if(nobj->mid && !nobj->memptr) {
+			for(int k = 0; k < objlist.count; k++) {
+				if(objlist.list[k]->id == nobj->mid) {
+					nobj->memptr = objlist.list[k];
+					break;
 				}
-				if(ImGui::IsRootWindowOrAnyChildFocused()) {
+			}
+			if(!nobj->memptr) {
+				LogMessage("Invalid MemID [%04X] on [%04X]", nobj->mid, nobj->id);
+				nobj->mid = 0;
+			}
+		}
+		if(nobj->win && ncls->draw && nobj->memptr) {
+			snprintf(wtitle, 256, "%s [%04X]###win-%x", ncls->desc ? ncls->desc : ncls->name, nobj->id, i);
+			float cas = 40.f+20.f*(wo&15);
+			wo++;
+			ImGui::SetNextWindowPos(ImVec2(cas, cas), ImGuiSetCond_Appearing);
+			if(ImGui::Begin(wtitle, &nobj->win, icidefwin | ImGuiWindowFlags_AlwaysAutoResize)) {
+				ncls->draw(nobj->rvstate, (uint16_t*)nobj->memptr->rvstate, nobj->pixbuf.get(), ncls->sbw);
+				ICIC_UpdateHWTexture(&nobj->uitex, ncls->sbw, ncls->sbh, nobj->pixbuf.get());
+				ImGui::Image(&nobj->uitex, ImVec2(ncls->rendw*2, ncls->rendh*2), ImVec2(0,0), nobj->uvfar);
+				if(ImGui::IsRootWindowOrAnyChildFocused() && nobj->kid) {
 					ui_vkeyboard = true;
+					keybid = nobj->kid;
 				}
 			}
 			ImGui::End();
@@ -950,7 +1700,7 @@ bool ICIC_Emu_ProcessEvent(SDL_Event* event)
 			if(!kt) {
 				LogMessage("Unmapped KeyDn: %d %d\n", event->key.keysym.scancode, event->key.keysym.sym);
 			} else {
-				WriteKey(kt, 0);
+				server_write_key(kt, 0);
 				vkeyb_dn[kt] = 1;
 			}
 		}
@@ -961,7 +1711,7 @@ bool ICIC_Emu_ProcessEvent(SDL_Event* event)
 			if(!kt) {
 				LogMessage("Unmapped KeyUp: %d %d\n", event->key.keysym.scancode, event->key.keysym.sym);
 			} else {
-				if(vkeyb_dn[kt]) WriteKey(kt, 1);
+				if(vkeyb_dn[kt]) server_write_key(kt, 1);
 				vkeyb_dn[kt] = 0;
 			}
 		}
@@ -970,10 +1720,11 @@ bool ICIC_Emu_ProcessEvent(SDL_Event* event)
 	if(modflag && (io.WantCaptureKeyboard || !ui_vkeyboard)) {
 		for(int i = 0; i < 512; i++) {
 			if(vkeyb_dn[i]) {
-				WriteKey(i, 1);
+				server_write_key(i, 1);
 				vkeyb_dn[i] = 0;
 			}
 		}
+		keybid = 0;
 		modflag = 0;
 	}
 	return false;

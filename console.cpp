@@ -78,7 +78,7 @@ struct ICIConsole
 	void Draw(const char* title, bool* p_open)
 	{
 		ImGui::SetNextWindowSize(ImVec2(520,600), ImGuiSetCond_FirstUseEver);
-		if(!ImGui::Begin(title, p_open)) {
+		if(!ImGui::Begin(title, p_open, ImGuiWindowFlags_ShowBorders)) {
 			ImGui::End();
 			return;
 		}
@@ -266,7 +266,7 @@ struct ICIConsole
 		return 0;
 	}
 };
-#ifdef WIN32
+#if defined(WIN32) && defined(_MSC_VER) && (_MSC_VER < 1900)
 int snprintf(char * buf, size_t len, const char * fmt, ...)
 {
 	va_list va;
@@ -319,12 +319,14 @@ void LogMessage(const char *fmt, ...)
 	conlen = vsnprintf(conbuf, sizeof(conbuf), fmt, val);
 	conbuf[sizeof(conbuf)-1] = 0;
 	va_end(val);
+	if(!uiconsole_late) {
 #ifdef WIN32
-	DWORD cw;
-	WriteConsoleA(ECCON, conbuf, conlen, &cw, NULL);
+		DWORD cw;
+		WriteConsoleA(ECCON, conbuf, conlen, &cw, NULL);
 #else
-	write(2, conbuf, conlen);
+		write(2, conbuf, conlen);
 #endif
+	}
 	if(uiconsole) uiconsole->AddLogText(conbuf);
 }
 

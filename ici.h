@@ -11,9 +11,11 @@
 struct clsobj;
 typedef int (*ici_rasterfn)(void *state, uint16_t *ram, uint32_t *rgba, uint32_t slack);
 typedef int (*ici_command)(clsobj *state);
+typedef int (*ici_update)(clsobj *state, uint16_t *ram);
 
 int imva_raster(void *vimva, uint16_t *ram, uint32_t *rgba, uint32_t slack);
 int LEMRaster(void *vlem, uint16_t *ram, uint32_t *surface, uint32_t pitch);
+int speaker_update(clsobj *state, uint16_t *ram);
 
 struct icitexture {
 	GLuint handle;
@@ -64,6 +66,11 @@ struct imva_nvstate {
 	uint32_t blink_time;
 	uint32_t fgcolor;
 	uint32_t bgcolor;
+};
+
+struct speaker_nvstate {
+	uint16_t ch_a;
+	uint16_t ch_b;
 };
 
 #endif

@@ -60,6 +60,7 @@ static const char * LICTXT =
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 
 static int apprun;
 
@@ -134,6 +135,7 @@ struct clsobj {
 	void * svlstate;
 	clsobj * memptr;
 	size_t rvsize;
+	size_t svsize;
 	icitexture uitex;
 	Ptr<uint32_t> pixbuf;
 	ImVec2 uvfar;
@@ -245,10 +247,12 @@ struct devclass {
 	Ptr<char> desc;
 	bool hasui;
 	ici_rasterfn draw;
+	ici_update update;
 	ici_command init;
 	ici_command reset;
 	bool iskeyboard;
 	size_t rvsize;
+	size_t svsize;
 	int sbw;
 	int sbh;
 	int rendw;
@@ -469,6 +473,12 @@ clsobj * Object_Create(uint32_t cid)
 			nobj->rvstate = malloc((nobj->rvsize = ncls->rvsize));
 		}
 		if(nobj->rvstate) ZeroMemory(nobj->rvstate, nobj->rvsize);
+		if(ncls->svsize) {
+			nobj->svlstate = malloc((nobj->svsize = ncls->svsize));
+		}
+		if(nobj->svlstate) ZeroMemory(nobj->svlstate, nobj->svsize);
+		if(ncls->update)
+			nobj->win = true;
 		if(ncls->rendw && ncls->rendh) {
 			nobj->win = true;
 			ICIC_CreateHWTexture(&nobj->uitex, ncls->sbw, ncls->sbh);
@@ -804,7 +814,7 @@ void ParamNewPopup(devclass *dcls)
 				break;
 			case PARAM_LID:
 				snprintf(title, 128, "L-ID###V%X", i);
-				ImGui::InputText(title, dp->buf.get(), 11, ImGuiInputTextFlags_CallbackCharFilter | ImGuiInputTextFlags_CallbackAlways, LIDTextEditCallback, 0);
+				ImGui::InputText(title, dp->buf.get(), 12, ImGuiInputTextFlags_CallbackCharFilter | ImGuiInputTextFlags_CallbackAlways, LIDTextEditCallback, 0);
 				break;
 			case PARAM_TYPE_BOOL:
 				break;
@@ -1017,11 +1027,11 @@ int NetworkMessageIn(unsigned char *in, size_t len)
 		}
 		break;
 	case 0x224:
-		if(ml > 4) LogMessage("[error] server: Object [%04x] Reset - %d", mi[1], mi[2]);
+		if(ml > 4 && mi[2]) LogMessage("[error] server: Object [%04x] Reset - %d", mi[1], mi[2]);
 		else LogMessage("server: Object [%04x] Reset", mi[1]);
 		break;
 	case 0x225:
-		if(ml > 4) LogMessage("[error] server: Object [%04x] Stop - %d", mi[1], mi[2]);
+		if(ml > 4 && mi[2]) LogMessage("[error] server: Object [%04x] Stop - %d", mi[1], mi[2]);
 		else LogMessage("server: Object [%04x] Stopped", mi[1]);
 		break;
 	default:
@@ -1036,6 +1046,9 @@ void InitICIClasses()
 	devparameter *r;
 	ncls = Class_Register(0, "keyboard", 0);
 	ncls->iskeyboard = true;
+	ncls = Class_Register(0, "speaker", 0);
+	ncls->update = speaker_update;
+	ncls->rvsize = sizeof(speaker_nvstate);
 	ncls = Class_Register(0, "rom", 0);
 	r = Ptr<devparameter>::make();
 	r->name = strdup("Size");
@@ -1074,11 +1087,66 @@ void InitICIClasses()
 	ncls->draw = imva_raster;
 }
 
+static int afr = 0;
+static int speaker_rate1 = 0;
+static int speaker_rate2 = 0;
+void ICI_AudioGen(void *usr, Uint8 *stream, int len)
+{
+	static int lse = 0;
+	static int lsr = 0;
+	int16_t *vse = (int16_t*)stream;
+	while(len) {
+		float fv = 0.0f;
+		float fc;
+		if(speaker_rate1) {
+			fc = sinf(6.2831853072 * lse * 2.08333333e-5);
+			if(fc < 0.8f) {
+				if(fc > -0.8f) fc = 0;
+				else fc = -1.0f;
+			} else fc = 1.0f;
+			fv += 10000.0f * fc;
+			lse += speaker_rate1;
+		}
+		if(speaker_rate2) {
+			fc = sinf(6.2831853072 * lsr * 2.08333333e-5);
+			if(fc < 0.8f) {
+				if(fc > -0.8f) fc = 0;
+				else fc = -1.0f;
+			} else fc = 1.0f;
+			fv += 7000.0f * fc;
+			lsr += speaker_rate2;
+		}
+		int16_t v = int(fv);
+		vse[0] = v;
+		vse[1] = v;
+		vse+=2;
+		len-= 4;
+		if(lse >= 48000) lse -= 48000;
+		if(lsr >= 48000) lsr -= 48000;
+	}
+}
+
+int speaker_update(clsobj *state, uint16_t *ram)
+{
+	speaker_nvstate *nvs = (speaker_nvstate*)state->rvstate;
+	if(state->win) {
+		speaker_rate1 = nvs->ch_a;
+		speaker_rate2 = nvs->ch_b;
+	} else {
+		speaker_rate1 = 0;
+		speaker_rate2 = 0;
+	}
+	return 0;
+}
+
 int ICIMain()
 {
 	int crs, i;
 	timeval tvl;
 	fd_set fdsr;
+	SDL_AudioSpec sdla_want, sdla_have;
+	SDL_AudioDeviceID sdla_dev;
+	memset(&sdla_want, 0, sizeof(SDL_AudioSpec));
 
 	StartConsole();
 	LogMessage("Starting\n");
@@ -1161,12 +1229,25 @@ int ICIMain()
 	ShowUIConsole();
 	InitKeyMap();
 
+	sdla_want.freq = 48000;
+	sdla_want.format = AUDIO_S16;
+	sdla_want.channels = 2;
+	sdla_want.callback = ICI_AudioGen;
+	sdla_dev = SDL_OpenAudioDevice(NULL, 0, &sdla_want, &sdla_have, SDL_AUDIO_ALLOW_FORMAT_CHANGE);
+	if(sdla_dev < 1) {
+		LogMessage("SDL: Open Audio Device fails: %s", SDL_GetError());
+	} else {
+		afr = sdla_have.samples;
+		SDL_PauseAudioDevice(sdla_dev, 0);
+	}
 	while (apprun) {
 		SDL_Event sdlevent;
-		while (SDL_PollEvent(&sdlevent)) {
+		int i = SDL_WaitEventTimeout(&sdlevent, 1);
+		while(i) {
 			ICIC_ProcessEvent(&sdlevent);
 			ICIC_Emu_ProcessEvent(&sdlevent);
 			if(sdlevent.type == SDL_QUIT) apprun = false;
+			i = SDL_PollEvent(&sdlevent);
 		}
 		ICIC_NewFrame(window);
 		if(ImGui::BeginMainMenuBar()) {
@@ -1212,7 +1293,7 @@ int ICIMain()
 			ImGui::SetNextWindowPosCenter(ImGuiSetCond_Appearing);
 			if(ImGui::Begin("About ICIClient##iciabout", &ui_about, icidefwin)) {
 				ImGui::Indent();
-				ImGui::Text("ICIClient Version 0.9");
+				ImGui::Text("ICIClient Version 0.9a");
 				ImGui::Text(CPRTTXT);
 				ImGui::SetWindowSize(ImVec2(ImGui::GetItemRectSize().x * 2.0f, 400.0f), ImGuiSetCond_Appearing);
 				ImGui::Unindent();
@@ -1318,6 +1399,7 @@ int ICIMain()
 		ImGui::Render();
 		SDL_GL_SwapWindow(window);
 	}
+	if(sdla_dev) SDL_CloseAudioDevice(sdla_dev);
 	objlist.Clear();
 	free(netbuff);
 	free(msgbuff);
@@ -1355,7 +1437,7 @@ int ShowDevMenu()
 			clsobj *nobj = objlist.list[i];
 			if(!nobj) continue;
 			if(!nobj->iclazz) continue;
-			if(!nobj->iclazz->hasui && !nobj->iclazz->draw) continue;
+			if(!nobj->iclazz->hasui && !nobj->iclazz->update && !nobj->iclazz->draw) continue;
 			snprintf(wtitle, 256, "%s %04x###dev%X", nobj->iclazz->name.get(), nobj->id, i);
 			ImGui::MenuItem(wtitle, 0, &nobj->win);
 			if(!nobj->rvstate) continue;
@@ -1489,7 +1571,7 @@ int UpdateDevViewer()
 			if(nobj->rvstate) {
 				ImGui::Text("State Storage"); ImGui::NextColumn();
 				ImGui::Text("%d bytes", nobj->rvsize); ImGui::NextColumn();
-				if(ncls && ncls->draw) {
+				if(ncls && (ncls->draw || ncls->update)) {
 					ImGui::Text("Window"); ImGui::NextColumn();
 					snprintf(wtitle, 256, "Show###sdev%X", nobj->id, i);
 					ImGui::Checkbox(wtitle, &nobj->win); ImGui::NextColumn();
@@ -1558,6 +1640,16 @@ int UpdateDisplay()
 				LogMessage("Invalid MemID [%04X] on [%04X]", nobj->mid, nobj->id);
 				nobj->mid = 0;
 			}
+		}
+		if(ncls->update && nobj->memptr) {
+			//snprintf(wtitle, 256, "%s [%04X]###win-%x", ncls->desc ? ncls->desc.get() : ncls->name.get(), nobj->id, i);
+			//float cas = 40.f+20.f*(wo&15);
+			//wo++;
+			ncls->update(nobj, (uint16_t*)nobj->memptr->rvstate);
+			//ImGui::SetNextWindowPos(ImVec2(cas, cas), ImGuiSetCond_Appearing);
+			//if(ImGui::Begin(wtitle, &nobj->win, icidefwin | ImGuiWindowFlags_AlwaysAutoResize)) {
+			//}
+			//ImGui::End();
 		}
 		if(nobj->win && ncls->draw && nobj->memptr) {
 			snprintf(wtitle, 256, "%s [%04X]###win-%x", ncls->desc ? ncls->desc.get() : ncls->name.get(), nobj->id, i);

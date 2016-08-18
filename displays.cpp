@@ -44,7 +44,7 @@ static unsigned int NyaLogo[] = {
 0x81018101,0x80808080,0x80408040,0x80208020,0xCA61D1D5,
 0xDD353AEE,0x19198992,0x67A4A1DD,0xD4956550,0x3FFC3FFC
 };
-static void imva_colors(struct imva_nvstate *imva)
+static void imva_colors(struct imva_rvstate *imva)
 {
 	uint8_t r,g,b,c;
 	uint32_t fg, bg;
@@ -62,8 +62,9 @@ static void imva_colors(struct imva_nvstate *imva)
 	imva->bgcolor = bg | 0xff000000;
 }
 
-void imva_reset(struct imva_nvstate *imva)
+void meiimva::reset()
 {
+	struct imva_rvstate *imva = (struct imva_rvstate *)rvstate;
 	imva->base = 0;
 	imva->ovbase = 0;
 	imva->colors = 0x011f1;
@@ -79,12 +80,14 @@ void imva_reset(struct imva_nvstate *imva)
  * pitch is num pixels to move to next line
  */
 #define IMVA_RD(m,a)  (m[a])
-int imva_raster(void *vimva, uint16_t *ram, uint32_t *rgba, uint32_t pitch)
+int meiimva::rasterfn()
 {
-	struct imva_nvstate *imva = (struct imva_nvstate *)vimva;
+	struct imva_rvstate *imva = (struct imva_rvstate *)rvstate;
+	uint16_t *ram = (uint16_t *)memptr->rvstate;
+	uint32_t *rgba = pixbuf.get(); // get the RGBA buffer
+	uint32_t slack = iclazz->sbw - 320; // width to get to next line (pixels)
 	imva_colors(imva);
 	uint32_t bg, fg;
-	uint32_t slack = pitch - 320;
 	uint16_t raddr, ova, ovo, ove;
 	bg = imva->bgcolor;
 	fg = imva->fgcolor;
@@ -142,9 +145,13 @@ int imva_raster(void *vimva, uint16_t *ram, uint32_t *rgba, uint32_t pitch)
 	return 1;
 }
 
-int LEMRaster(void *vlem, uint16_t *ram, uint32_t *surface, uint32_t pitch)
+#define LEMBORDER 6
+int nyalem::rasterfn()
 {
-	NyaLEM *lem = (NyaLEM *)vlem;
+	nyalem_rv *lem = (nyalem_rv *)rvstate; // LEM variables
+	uint16_t *ram = (uint16_t *)memptr->rvstate;
+	uint32_t *surface = pixbuf.get(); // get the RGBA buffer
+	uint32_t pitch = iclazz->sbw; // the width of a line in the pixel buffer (pixels)
 	unsigned int x,y,sl,yo,yu;
 	unsigned int vtw, vtb, vta;
 	unsigned int cla, clb, clf, ctk;
@@ -176,20 +183,21 @@ int LEMRaster(void *vlem, uint16_t *ram, uint32_t *surface, uint32_t pitch)
 		lem->status = 0;
 		dn = 1;
 	}
-	if(lem->fontmem) {
+	if(lem->fontmem) { // custom font?
 		lclfont = ram + lem->fontmem;
 	} else {
 		lclfont = deffont;
 	}
 
 	switch(dn) {
-	case 0:
+	case 0: // normal operation
 		for(x = 0; x < 16; x++) {
-			if(lem->palmem) {
+			if(lem->palmem) { // custom palette?
 				vtb = ram[(lem->palmem + x) & 0xffff];
 			} else {
 				vtb = defpal[x];
 			}
+			// convert lem palette to rgba
 			vta  = (((vtb & 0x00000f) << 16) | ((vtb & 0x00000f) << 20));
 			vta |= (((vtb & 0x0000f0) <<  4) | ((vtb & 0x0000f0) <<  8));
 			vta |= (((vtb & 0x000f00) >>  4) | ((vtb & 0x000f00) >>  8));
@@ -197,73 +205,76 @@ int LEMRaster(void *vlem, uint16_t *ram, uint32_t *surface, uint32_t pitch)
 		}
 		vta = ccpal[lem->border & 0x0f];
 		yo = 0;
-		for(y = 96+12; y > 0; y--) {
-			for(x = 0; x < 128+12; x++) {
-				(surface)[x+yo] = vta;
+		// clear display with border color
+		for(y = 96+(LEMBORDER * 2); y > 0; y--) {
+			for(x = 0; x < 128+(LEMBORDER * 2); x++) {
+				(surface)[x+yo] = vta; // fill in display area
 			}
-			yo += pitch;
+			yo += pitch; // next line
 		}
 		yo = 0;
 		vmmp = lem->dspmem;
+		// timing control is here for some reason
 		if(ctk > lem->TTFlip || lem->TTFlip > ctk + 10000) {
 			lem->status ^= 2;
 			lem->TTFlip = ctk + 800;
 		}
-		yo = (pitch * 6) + 6;
-		for(sl = 0; sl < 12; sl++) {
-			vtb = 0x00100;
+		yo = (pitch * LEMBORDER) + LEMBORDER;
+		for(sl = 0; sl < 12; sl++) { // LEM has 12 text lines
+			vtb = 0x00100; // setup pixel bit masks
 			vta = 0x0001;
-			for(y = 8; y > 0; y--) {
-				for(x = 0; x < 32; x++) {
+			for(y = 8; y > 0; y--) { // 8 raster lines per row
+				for(x = 0; x < 32; x++) { // LEM has 32 text columns
 					vtw = ram[(uint16_t)(vmmp + x)];
-					clb = ccpal[(vtw >> 8) & 0x0f];
+					clb = ccpal[(vtw >> 8) & 0x0f]; // grab fg/bg colors
 					clf = ccpal[(vtw >> 12) & 0x0f];
-					if((vtw & 0x0080) && (lem->status & 2))
+					if((vtw & 0x0080) && (lem->status & 2)) // handle blink state
 						cla = clb;
 					else
 						cla = clf;
-					vtw &= 0x0000007f;
+					vtw &= 0x0000007f; // get char to display
 					vtw <<= 1;
+					// draw a row of pixels
 					(surface)[yo+0] = ((lclfont[vtw]) & vtb) ? cla : clb ;
 					(surface)[yo+1] = ((lclfont[vtw]) & vta) ? cla : clb ;
 					(surface)[yo+2] = ((lclfont[vtw+1]) & vtb) ? cla : clb ;
 					(surface)[yo+3] = ((lclfont[vtw+1]) & vta) ? cla : clb ;
 					yo += 4;
 				}
-				vtb <<= 1;
+				vtb <<= 1; // bits progess with lines
 				vta <<= 1;
-				yo += pitch - (128);
+				yo += pitch - (128); // next raster line
 			}
-			vmmp += 32;
+			vmmp += 32; // next line in dcpu memory
 		}
 		break;
-	case 1:
+	case 1: // bitmap mode (not used)
 		yo = 0;
 		vmmp = 0;
 		vtb = 0x008000;
 		vtw = ram[vmmp++];
-		for(y = 96+12; y > 0; y--) {
-			for(x = 0; x < 128+12; x++) {
+		for(y = 96+(LEMBORDER * 2); y > 0; y--) {
+			for(x = 0; x < 128+(LEMBORDER * 2); x++) {
 				(surface)[x+yo] = ((vtw) & vtb) ? 0xFFFFFFFF : 0xFF000000 ;
 				if(!(vtb >>= 1)) {vtb = 0x008000; vtw = ram[vmmp++];}
 			}
 			yo += pitch;
 		}
 		break;
-	case 2:
-		yo = 0;
-		for(y = 96+12; y > 0; y--) {
-			for(x = 0; x < 128+12; x++) {
+	case 2: // logo display
+		yo = 0; // clear display
+		for(y = 96+(LEMBORDER * 2); y > 0; y--) {
+			for(x = 0; x < 128+(LEMBORDER * 2); x++) {
 				(surface)[x+yo] = 0xAFFF0000 ;
 			}
 			yo += pitch;
 		}
 		vmmp = 0;
-		vtw = NyaLogo[vmmp++];
+		vtw = NyaLogo[vmmp++]; // get logo bitmap
 		vtb = 0x80000000;
-		for(y = 22+6; y < 22+28+6; y++) {
+		for(y = 22+LEMBORDER; y < 22+28+LEMBORDER; y++) {
 			yo = pitch*y;
-			for(x = (44+6); x < (44+6+16); x++) {
+			for(x = (44+LEMBORDER); x < (44+LEMBORDER+16); x++) {
 				if( (vtw & vtb) ) {
 					(surface)[x+yo] = 0xFF00FFFF;
 				}
@@ -271,9 +282,9 @@ int LEMRaster(void *vlem, uint16_t *ram, uint32_t *surface, uint32_t pitch)
 			}
 		}
 		vtb = 0x80000000;
-		for(y = 55+6; y < 55+3+6; y++) {
+		for(y = 55+LEMBORDER; y < 55+3+LEMBORDER; y++) {
 			yo = pitch*y;
-			for(x = (35+6); x < (35+6+52); x++) {
+			for(x = (35+LEMBORDER); x < (35+LEMBORDER+52); x++) {
 				if(((vtw) & vtb)) {
 					(surface)[x+yo] = 0xFF00FFFF;
 				}
@@ -283,9 +294,9 @@ int LEMRaster(void *vlem, uint16_t *ram, uint32_t *surface, uint32_t pitch)
 		vtb = 0x80000000;
 		vta = 0x00008000;
 		vtw = NyaLogo[vmmp++];
-		yo = pitch*(33+6)    + (6+62);
-		yu = pitch*(33+6+11) + (6+62);
-		for(x = 0; x < 16; x++) {
+		yo = pitch*(33+LEMBORDER)    + (LEMBORDER+62);
+		yu = pitch*(33+LEMBORDER+11) + (LEMBORDER+62);
+		for(x = 0; x < 16; x++) { // the two lines horizontal lines (I think)
 			if(((vtw) & vtb)) {
 				(surface)[yo] = 0xFF00FFFF;
 			}

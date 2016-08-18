@@ -38,14 +38,7 @@ static const char * LICTXT =
 #pragma comment(lib, "WS2_32.lib")
 #pragma comment(lib, "OpenGL32.lib")
 #pragma comment(lib, "glew32s.lib")
-#define ICI_GET_ERROR WSAGetLastError()
-#define SHUT_RDWR SD_BOTH
 #else
-#define ZeroMemory(a,l)  memset((a), 0, (l))
-#define SOCKET int
-#define INVALID_SOCKET -1
-#define ICI_GET_ERROR errno
-#define closesocket(a) close(a)
 #include <unistd.h>
 #include <sys/types.h>
 #include <errno.h>
@@ -54,7 +47,7 @@ static const char * LICTXT =
 #include <netinet/tcp.h>
 #include <netdb.h>
 #endif
-
+#undef ZeroMemory
 #include <malloc.h>
 #include <memory.h>
 #include <stdarg.h>
@@ -83,144 +76,20 @@ int net_listobj = 0;
 int net_listclass = 0;
 int net_listheir = 0;
 
-template<typename T>
-class Ptr {
-public:
-	T *p;
-	Ptr() { p = 0; }
-	Ptr(T *n) { p = n; }
-	~Ptr() { if(p) free(p); p = 0; }
-	static T* make() {
-		T* t = (T*)malloc(sizeof(T));
-		if(t) ZeroMemory(t, sizeof(T));
-		return t;
-	}
-	static T* make_array(size_t c) {
-		T* t = (T*)malloc(sizeof(T) * c);
-		if(t) ZeroMemory(t, sizeof(T) * c);
-		return t;
-	}
-	T* get() { return p; }
-	T* operator=(T *n) { return (p = n); }
-	T* operator=(T &n) { return (p = &n); }
-	operator bool() const { return (p!=(T*)0); }
-	T& operator *() { return *p; }
-	const T& operator *() const { return *p; }
-	T& operator[](size_t n) { return p[n]; }
-	const T& operator[](size_t n) const { return p[n]; }
-	T& operator->() { return *p; }
-	const T& operator->() const { return *p; }
-	T* operator++() { return ++p; }
-	T* operator++(int) { return p++; }
-	T* operator+(size_t n) const { return p+n; }
-	T* operator+=(size_t n) { return p+=n; }
-	T* operator--() { return --p; }
-	T* operator--(int) { return p--; }
-	T* operator-(size_t n) const { return p-n; }
-	T* operator-=(size_t n) { return p-=n; }
-};
+class devclass;
 
-struct devclass;
-
-struct clsobj {
-	uint32_t id;
-	uint32_t cid;
-	uint32_t pid;
-	uint32_t mid;
-	uint32_t kid;
-	bool hasleaf;
-	Ptr<char> name;
-	devclass *iclazz;
-	void * rvstate;
-	void * svlstate;
-	clsobj * memptr;
-	size_t rvsize;
-	size_t svsize;
-	icitexture uitex;
-	Ptr<uint32_t> pixbuf;
-	ImVec2 uvfar;
-	bool win;
-	bool rparent;
-	~clsobj() {
-		if(rvstate) free(rvstate);
-		if(svlstate) free(svlstate);
-	}
-	void do_reset()
-	{
-		this->id = 0;
-		this->cid = 0;
-		this->pid = 0;
-		this->kid = 0;
-		this->hasleaf = false;
-	}
-};
-
-template<typename T>
-struct ItemFree {
-	static void Free(T *m) { free(m); }
-};
-template<>
-struct ItemFree<clsobj> {
-	static void Free(clsobj *m) {
-		m->~clsobj();
-		free(m);
-	}
-};
-
-template<class T, class K = ItemFree<T> > struct ItemTable {
-	T **list;
-	int count;
-	int limit;
-	ItemTable() {
-		list = NULL;
-		count = limit = 0;
-	}
-	int AddItem(T *item)
-	{
-		int i;
-		if(!list) {
-			i = 64;
-			void *mem = malloc(i * sizeof(T*));
-			if(!mem) return -1;
-			ZeroMemory(mem, i * sizeof(T*));
-			list = (T**)mem;
-			limit = i;
-		} else if(count >= limit) {
-			i = count * 2;
-			void *mem = malloc(i * sizeof(T*));
-			if(!mem) return -1;
-			memcpy(mem, list, count * sizeof(T*));
-			list = (T**)mem;
-			limit = i;
-		}
-		list[count] = item;
-		return count++;
-	}
-	int AddItem(Ptr<T> &item) { return AddItem(item.get); }
-	T* RemoveItem(int idx)
-	{
-		if(!list || !count || !(idx < count)) return NULL;
-		T *item = list[idx];
-		count--;
-		int i;
-		for(i = idx; i < count; i++) {
-			list[i] = list[i+1];
-		}
-		list[i] = NULL;
-		return item;
-	}
-	void DeleteItem(int idx)
-	{
-		T *item = RemoveItem(idx);
-		if(item) K::Free(item);
-	}
-	void Clear()
-	{
-		for(int i = 0; i < count; i++) {
-			K::Free(list[i]);
-		}
-	}
-};
+clsobj::~clsobj() {
+	if(rvstate) free(rvstate);
+	if(svlstate) free(svlstate);
+}
+void clsobj::reset()
+{
+	this->id = 0;
+	this->cid = 0;
+	this->pid = 0;
+	this->kid = 0;
+	this->hasleaf = false;
+}
 
 enum EParameter : int {
 	PARAM_INT = 0,
@@ -231,34 +100,30 @@ enum EParameter : int {
 	PARAM_BOOL = 0x10004,
 	PARAM_OPTIONAL = 0x10000,
 };
-struct devparameter {
-	Ptr<char> name;
-	Ptr<char> buf;
-	int code;
-	int type;
-	int len;
-	bool use;
-	uint64_t ival;
-};
 
-struct devclass {
-	uint32_t cid;
-	Ptr<char> name;
-	Ptr<char> desc;
-	bool hasui;
-	ici_rasterfn draw;
-	ici_update update;
-	ici_command init;
-	ici_command reset;
-	bool iskeyboard;
-	size_t rvsize;
-	size_t svsize;
-	int sbw;
-	int sbh;
-	int rendw;
-	int rendh;
-	ItemTable<devparameter> instparam;
-};
+void devclass::AddParameter(int code, const char * name, int type)
+{
+	devparameter * r = Ptr<devparameter>::make();
+	r->name = strdup(name);
+	r->type = type;
+	if((type & 0xffff) == PARAM_LID) { r->buf = Ptr<char>::make_array(16); }
+	r->code = code;
+	instparam.AddItem(r);
+}
+int toPO2(int x) {
+	int i = 1;
+	while(i < x) {
+		i <<=1;
+	}
+	return i;
+}
+void devclass::AddDisplayArea(int w, int h)
+{
+	rendw = w; rendh = h;
+	sbw = toPO2(w);
+	sbh = toPO2(h);
+	hasui = true;
+}
 
 static ItemTable<devclass> clslist;
 static ItemTable<clsobj> objlist;
@@ -291,7 +156,7 @@ int NetworkClose()
 	for(k = 0; k < objlist.count; k++) {
 		clsobj *kobj = objlist.list[k];
 		if(kobj) {
-			kobj->do_reset();
+			kobj->reset();
 		}
 	}
 	return 0;
@@ -464,7 +329,11 @@ clsobj * Object_Create(uint32_t cid)
 	if(!cid) return NULL;
 	devclass *ncls = GetClassID(cid);
 	clsobj *nobj;
-	nobj = Ptr<clsobj>::make();
+	if(ncls->proto) {
+		nobj = ncls->proto->make();
+	} else {
+		nobj = new(Ptr<clsobj>::make()) clsobj();
+	}
 	if(!nobj) return NULL;
 	if(ncls) {
 		nobj->iclazz = ncls;
@@ -472,12 +341,12 @@ clsobj * Object_Create(uint32_t cid)
 		if(ncls->rvsize) {
 			nobj->rvstate = malloc((nobj->rvsize = ncls->rvsize));
 		}
-		if(nobj->rvstate) ZeroMemory(nobj->rvstate, nobj->rvsize);
+		if(nobj->rvstate) iciZero(nobj->rvstate, nobj->rvsize);
 		if(ncls->svsize) {
 			nobj->svlstate = malloc((nobj->svsize = ncls->svsize));
 		}
-		if(nobj->svlstate) ZeroMemory(nobj->svlstate, nobj->svsize);
-		if(ncls->update)
+		if(nobj->svlstate) iciZero(nobj->svlstate, nobj->svsize);
+		if(ncls->hasui)
 			nobj->win = true;
 		if(ncls->rendw && ncls->rendh) {
 			nobj->win = true;
@@ -529,8 +398,8 @@ int Connect(const char *addr, int port) {
 		NetworkClose();
 	}
 	if(!port) port = 58704;
-	ZeroMemory(&remokon, sizeof(remokon));
-	ZeroMemory(&hint, sizeof(addrinfo));
+	iciZero(&remokon, sizeof(remokon));
+	iciZero(&hint, sizeof(addrinfo));
 	snprintf(sport, 16, "%u", (uint16_t)port);
 	hint.ai_family = AF_INET;
 	hint.ai_protocol = IPPROTO_TCP;
@@ -578,14 +447,14 @@ void server_object_attach(clsobj *a, clsobj *b)
 	return;
 }
 /** Attach B to A */
-void server_object_deattach(clsobj *a, uint32_t idx)
+void server_object_deattach(clsobj *a, int32_t idx)
 {
 	if(!unet) return;
 	if(!a) return;
 	uint32_t *nf = (uint32_t*)msgbuff;
 	nf[0] = 0x02300008;
 	nf[1] = a->id;
-	nf[2] = idx;
+	nf[2] = (uint32_t)idx;
 	NetworkMessageOut();
 	return;
 }
@@ -626,6 +495,22 @@ int isi_text_dec(const char *text, int len, int limit, void *vv, int olen)
 		}
 	}
 	return 0;
+}
+
+void server_object_load(devclass * ncls, const char *luid)
+{
+	if(!unet) return;
+	if(!ncls) return;
+	if(!ncls->cid) return;
+	uint32_t *nf = (uint32_t*)msgbuff;
+	nf[1] = 0;
+	nf[2] = ncls->cid;
+	//case PARAM_LID:
+	nf[3] = nf[4] = 0;
+	isi_text_dec(luid, strlen(luid), 11, nf+3, 8);
+	nf[0] = 0x03A00010;
+	NetworkMessageOut();
+	return;
 }
 
 void server_object_create(devclass * ncls)
@@ -723,7 +608,7 @@ void process_heirarchy()
 				clsobj *iobj = objlist.list[i];
 				if(iobj
 					&& iobj->iclazz
-					&& iobj->iclazz->draw
+					&& iobj->iclazz->hasui
 					&& iobj->pid
 					&& iobj->mid == kobj->mid
 					&& iobj->id != kobj->id) {
@@ -772,6 +657,12 @@ int LIDTextEditCallback(ImGuiTextEditCallbackData *data)
 		return 1;
 	}
 	return 0;
+}
+
+void RequestLoadObject(devclass *dcls, const char *lid)
+{
+	server_object_load(dcls, lid);
+	LogMessage("Load Object %s", dcls->name.get());
 }
 
 void RequestNewObject(devclass *dcls)
@@ -907,11 +798,17 @@ int NetworkMessageIn(unsigned char *in, size_t len)
 				vsa = inh[0] | (inh[1] << 8) | (inh[2] << 16) | (inh[3] << 24);
 				vrl = inh[4] | (inh[5] << 8);
 				inh += 6;
+				if(inh == ine + 6) {
+					vrl = 0;
+				}
 				if(inh < ine && vsa >= 0x20000) {
 					LogMessage("memsync invalid address %04x", vsa);
 					break;
 				}
 			}
+		}
+		if(vrl) {
+			LogMessage("memsync excess clipped at %04x:%04x ld:%x", vsa, vrl, inh - ine);
 		}
 	}
 		break;
@@ -920,8 +817,13 @@ int NetworkMessageIn(unsigned char *in, size_t len)
 		for(k = 0; k < objlist.count; k++) {
 			clsobj *kobj = objlist.list[k];
 			if(!kobj) continue;
+			devclass *ncls = kobj->iclazz;
+			if(!ncls) continue;
 			if(mi[1] == kobj->id && l <= kobj->rvsize) {
 				memcpy(kobj->rvstate, mi+2, l);
+				if(kobj->memptr) {
+					kobj->update((uint16_t*)kobj->memptr->rvstate);
+				}
 			}
 		}
 		break;
@@ -1034,6 +936,15 @@ int NetworkMessageIn(unsigned char *in, size_t len)
 		if(ml > 4 && mi[2]) LogMessage("[error] server: Object [%04x] Stop - %d", mi[1], mi[2]);
 		else LogMessage("server: Object [%04x] Stopped", mi[1]);
 		break;
+	case 0x23A:
+		if(!mi[2]) {
+			LogMessage("server: Object [%04x] Loaded with class [%04x]", mi[3], mi[4]);
+			assign_id(mi[4], mi[3]);
+		} else {
+			LogMessage("[error] server: %d - Object load class [%04x]", mi[2], mi[4]);
+		}
+		break;
+
 	default:
 		break;
 	}
@@ -1043,48 +954,25 @@ int NetworkMessageIn(unsigned char *in, size_t len)
 void InitICIClasses()
 {
 	devclass * ncls;
-	devparameter *r;
+
 	ncls = Class_Register(0, "keyboard", 0);
 	ncls->iskeyboard = true;
 	ncls = Class_Register(0, "speaker", 0);
-	ncls->update = speaker_update;
-	ncls->rvsize = sizeof(speaker_nvstate);
+	ncls->AddClass<speakerdev>(); ncls->hasui = true;
 	ncls = Class_Register(0, "rom", 0);
-	r = Ptr<devparameter>::make();
-	r->name = strdup("Size");
-	r->type = PARAM_INT | PARAM_OPTIONAL; r->code = 1;
-	ncls->instparam.AddItem(r);
-	r = Ptr<devparameter>::make();
-	r->name = strdup("Image ID");
-	r->type = PARAM_LID | PARAM_OPTIONAL; r->code = 2;
-	r->buf = Ptr<char>::make_array(16);
-	ncls->instparam.AddItem(r);
-	r = Ptr<devparameter>::make();
-	r->name = strdup("Endian Flip Image");
-	r->type = PARAM_BOOL | PARAM_OPTIONAL; r->code = 3;
-	ncls->instparam.AddItem(r);
+	ncls->AddParameter(1, "Size", PARAM_INT | PARAM_OPTIONAL);
+	ncls->AddParameter(2, "Image ID", PARAM_LID | PARAM_OPTIONAL);
+	ncls->AddParameter(3, "Endian Flip Image", PARAM_BOOL | PARAM_OPTIONAL);
 	ncls = Class_Register(0, "disk", 0);
-	r = Ptr<devparameter>::make();
-	r->name = strdup("Image ID");
-	r->type = PARAM_LID; r->code = 1;
-	r->buf = Ptr<char>::make_array(16);
-	ncls->instparam.AddItem(r);
+	ncls->AddParameter(1, "Image ID", PARAM_LID);
 	ncls = Class_Register(0, "memory_16x64k", 0);
 	ncls->rvsize = sizeof(uint16_t) * 0x10000;
 	ncls = Class_Register(0, "nya_lem", 0);
-	ncls->rendw = 140;
-	ncls->rendh = 108;
-	ncls->sbw = 256;
-	ncls->sbh = 128;
-	ncls->rvsize = sizeof(NyaLEM);
-	ncls->draw = LEMRaster;
+	ncls->AddDisplayArea(140, 108);
+	ncls->AddClass<nyalem>();
 	ncls = Class_Register(0, "imva", 0);
-	ncls->rendw = 320;
-	ncls->rendh = 200;
-	ncls->sbw = 512;
-	ncls->sbh = 256;
-	ncls->rvsize = sizeof(imva_nvstate);
-	ncls->draw = imva_raster;
+	ncls->AddDisplayArea(320, 200);
+	ncls->AddClass<meiimva>();
 }
 
 static int afr = 0;
@@ -1126,10 +1014,10 @@ void ICI_AudioGen(void *usr, Uint8 *stream, int len)
 	}
 }
 
-int speaker_update(clsobj *state, uint16_t *ram)
+int speakerdev::update(uint16_t *ram)
 {
-	speaker_nvstate *nvs = (speaker_nvstate*)state->rvstate;
-	if(state->win) {
+	speaker_rvstate *nvs = (speaker_rvstate*)rvstate;
+	if(win) {
 		speaker_rate1 = nvs->ch_a;
 		speaker_rate2 = nvs->ch_b;
 	} else {
@@ -1141,7 +1029,7 @@ int speaker_update(clsobj *state, uint16_t *ram)
 
 int ICIMain()
 {
-	int crs, i;
+	int crs;
 	timeval tvl;
 	fd_set fdsr;
 	SDL_AudioSpec sdla_want, sdla_have;
@@ -1212,7 +1100,7 @@ int ICIMain()
 	InitICIClasses();
 	apprun = 1;
 	unet = false;
-	ZeroMemory(&remokon, sizeof(sockaddr_in));
+	iciZero(&remokon, sizeof(sockaddr_in));
 
 	// Main message loop:
 	int zm, zl, zil, nlimit;
@@ -1223,6 +1111,7 @@ int ICIMain()
 	bool ui_showconnect = false;
 	bool ui_about = false;
 	bool ui_test = false;
+	int ui_pcenter = 0;
 	char serveraddr[256] = "";
 	int serverport = 0;
 	StartGUIConsole();
@@ -1290,16 +1179,17 @@ int ICIMain()
 			ImGui::ShowTestWindow(&ui_test);
 		}
 		if(ui_about) {
-			ImGui::SetNextWindowPosCenter(ImGuiSetCond_Appearing);
+			ImGui::SetNextWindowPosCenter(ui_pcenter == 2 ? ImGuiSetCond_Appearing : ImGuiSetCond_Always);
 			if(ImGui::Begin("About ICIClient##iciabout", &ui_about, icidefwin)) {
 				ImGui::Indent();
-				ImGui::Text("ICIClient Version 0.9a");
+				ImGui::Text("ICIClient Version 0.10");
 				ImGui::Text(CPRTTXT);
-				ImGui::SetWindowSize(ImVec2(ImGui::GetItemRectSize().x * 2.0f, 400.0f), ImGuiSetCond_Appearing);
+				ImGui::SetWindowSize(ImVec2(ImGui::GetItemRectSize().x * 2.0f, 400.0f), ImGuiSetCond_Always);
 				ImGui::Unindent();
 				ImGui::Separator();
 				ImGui::TextWrapped(LICTXT);
 				ImGui::Separator();
+				if(ui_pcenter < 2) ui_pcenter++;
 			}
 			ImGui::End();
 		}
@@ -1437,7 +1327,7 @@ int ShowDevMenu()
 			clsobj *nobj = objlist.list[i];
 			if(!nobj) continue;
 			if(!nobj->iclazz) continue;
-			if(!nobj->iclazz->hasui && !nobj->iclazz->update && !nobj->iclazz->draw) continue;
+			if(!nobj->iclazz->hasui) continue;
 			snprintf(wtitle, 256, "%s %04x###dev%X", nobj->iclazz->name.get(), nobj->id, i);
 			ImGui::MenuItem(wtitle, 0, &nobj->win);
 			if(!nobj->rvstate) continue;
@@ -1474,10 +1364,35 @@ void ShowAttachPop(clsobj *aobj, bool mem)
 		ImGui::EndPopup();
 	}
 }
+void ShowAttachAtPop(clsobj *aobj)
+{
+	char wtitle[256];
+	int i;
+	if(!aobj) return;
+	if(ImGui::BeginPopup("ItemAttachAt")) {
+		for(i = 0; i < objlist.count; i++) {
+			clsobj *nobj = objlist.list[i];
+			if(!nobj) continue;
+			if(nobj->cid < 0x2f00) continue;
+			devclass *ncls = nobj->iclazz;
+			if(ncls) {
+				snprintf(wtitle, 256, "%s [%04x]###IA-%X", nobj->iclazz->name.get(), nobj->id, i);
+			} else {
+				snprintf(wtitle, 256, "Class-%04X [%04x]###IA-%X", nobj->cid, nobj->id, i);
+			}
+			if(ImGui::Selectable(wtitle)) {
+				LogMessage("Attach [%04X] to [%04X]", nobj->id, aobj->id);
+				//server_object_attach(aobj, nobj);
+			}
+		}
+		ImGui::EndPopup();
+	}
+}
 
 int UpdateDevViewer()
 {
 	char wtitle[256];
+	static char loadlid[16];
 	if(!ui_showdev) return 0;
 	ImGui::SetNextWindowPosCenter(ImGuiSetCond_Once);
 	if(!ImGui::Begin("Devices", &ui_showdev, ImVec2(400, 350), -1, iciszwin)) {
@@ -1507,6 +1422,25 @@ int UpdateDevViewer()
 					}
 				} else if(ImGui::Selectable(wtitle)) {
 					RequestNewObject(dcls);
+				}
+			}
+		}
+		ImGui::EndPopup();
+	}
+	ImGui::SameLine();
+	if(ImGui::SmallButton("Load Dev"))
+		ImGui::OpenPopup("ItemLoad");
+	if(ImGui::BeginPopup("ItemLoad")) {
+		if(!unet) {
+			ImGui::TextColored(ImColor(255,10,0), "Not Connected!");
+		} else {
+			ImGui::InputText("L-ID to Load###LOAD-ID", loadlid, 12, ImGuiInputTextFlags_CallbackCharFilter | ImGuiInputTextFlags_CallbackAlways, LIDTextEditCallback, 0);
+			ImGui::Separator();
+			for(i = 0; i < clslist.count; i++) {
+				devclass *dcls = clslist.list[i];
+				snprintf(wtitle, 256, "%s###LX%X", dcls->desc? dcls->desc.get() : dcls->name.get(), i);
+				if(ImGui::Selectable(wtitle)) {
+					RequestLoadObject(dcls, loadlid);
 				}
 			}
 		}
@@ -1542,12 +1476,21 @@ int UpdateDevViewer()
 		}
 		bool isopen = ImGui::TreeNode(wtitle);
 		ImGui::NextColumn();
-		if(ncls && ncls->desc) ImGui::Text("%s", ncls->desc.get());
+		if(nobj->pid) {
+			snprintf(wtitle, 256, "Detach###dt%X", nobj->id);
+			if(ImGui::SmallButton(wtitle)) {
+				server_object_deattach(nobj, -3);
+			}
+		}
+		if(ncls && ncls->desc) {
+			if(nobj->pid) ImGui::SameLine();
+			ImGui::Text("%s", ncls->desc.get());
+		}
 		ImGui::NextColumn();
 		if(isopen) {
 			ImGui::Text("Class"); ImGui::NextColumn();
 			ImGui::Text("%04X", nobj->cid); ImGui::NextColumn();
-			if(nobj->mid || (nobj->cid >= 0x3000 && nobj->cid < 0x4000)) {
+			if(nobj->mid || (nobj->cid >= 0x3000)) {
 				ImGui::Text("Memory ID"); ImGui::NextColumn();
 				if(nobj->mid) {
 					ImGui::Text("%04X", nobj->mid);
@@ -1571,7 +1514,7 @@ int UpdateDevViewer()
 			if(nobj->rvstate) {
 				ImGui::Text("State Storage"); ImGui::NextColumn();
 				ImGui::Text("%d bytes", nobj->rvsize); ImGui::NextColumn();
-				if(ncls && (ncls->draw || ncls->update)) {
+				if(ncls && ncls->hasui) {
 					ImGui::Text("Window"); ImGui::NextColumn();
 					snprintf(wtitle, 256, "Show###sdev%X", nobj->id, i);
 					ImGui::Checkbox(wtitle, &nobj->win); ImGui::NextColumn();
@@ -1589,15 +1532,19 @@ int UpdateDevViewer()
 				ImGui::NextColumn();
 			}
 			if(nobj->cid > 0x2f00) {
-				if(!nobj->hasleaf || (nobj->cid >= 0x4000 && nobj->cid < 0x5000)) {
-					ImGui::Text("Attachment"); ImGui::NextColumn();
-					if(ImGui::SmallButton("Attach")) {
-						ImGui::OpenPopup("ItemAttach");
-						attachpoint = nobj;
-					}
-					ShowAttachPop(nobj, false);
-					ImGui::NextColumn();
+				ImGui::Text("Attachment"); ImGui::NextColumn();
+				if(ImGui::SmallButton("Attach")) {
+					ImGui::OpenPopup("ItemAttach");
+					attachpoint = nobj;
 				}
+				ImGui::SameLine();
+				if(ImGui::SmallButton("AttachAt")) {
+					ImGui::OpenPopup("ItemAttachAt");
+					attachpoint = nobj;
+				}
+				ShowAttachPop(nobj, false);
+				ShowAttachAtPop(nobj);
+				ImGui::NextColumn();
 			}
 			if(nobj->id && nobj->hasleaf) {
 				pstack[pscan] = i;
@@ -1641,23 +1588,23 @@ int UpdateDisplay()
 				nobj->mid = 0;
 			}
 		}
-		if(ncls->update && nobj->memptr) {
+		if(nobj->memptr) {
 			//snprintf(wtitle, 256, "%s [%04X]###win-%x", ncls->desc ? ncls->desc.get() : ncls->name.get(), nobj->id, i);
 			//float cas = 40.f+20.f*(wo&15);
 			//wo++;
-			ncls->update(nobj, (uint16_t*)nobj->memptr->rvstate);
+			nobj->update((uint16_t*)nobj->memptr->rvstate);
 			//ImGui::SetNextWindowPos(ImVec2(cas, cas), ImGuiSetCond_Appearing);
 			//if(ImGui::Begin(wtitle, &nobj->win, icidefwin | ImGuiWindowFlags_AlwaysAutoResize)) {
 			//}
 			//ImGui::End();
 		}
-		if(nobj->win && ncls->draw && nobj->memptr) {
+		if(nobj->win && ncls->hasui && nobj->memptr) {
 			snprintf(wtitle, 256, "%s [%04X]###win-%x", ncls->desc ? ncls->desc.get() : ncls->name.get(), nobj->id, i);
 			float cas = 40.f+20.f*(wo&15);
 			wo++;
 			ImGui::SetNextWindowPos(ImVec2(cas, cas), ImGuiSetCond_Appearing);
 			if(ImGui::Begin(wtitle, &nobj->win, icidefwin | ImGuiWindowFlags_AlwaysAutoResize)) {
-				ncls->draw(nobj->rvstate, (uint16_t*)nobj->memptr->rvstate, nobj->pixbuf.get(), ncls->sbw);
+				nobj->rasterfn();
 				ICIC_UpdateHWTexture(&nobj->uitex, ncls->sbw, ncls->sbh, nobj->pixbuf.get());
 				ImGui::Image(&nobj->uitex, ImVec2(ncls->rendw*2, ncls->rendh*2), ImVec2(0,0), nobj->uvfar);
 				if(ImGui::IsRootWindowOrAnyChildFocused() && nobj->kid) {

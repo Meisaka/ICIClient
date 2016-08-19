@@ -197,6 +197,16 @@ int NetworkMessageOut()
 	return 0;
 }
 
+int server_write_msg(clsobj * nobj, uint16_t *msg, int len)
+{
+	if(!nobj || !nobj->id) return -1;
+	if(len > 100) len = 100;
+	*(uint32_t*)(msgbuff) = 0x08000004 + (len * 2);
+	*(uint32_t*)(msgbuff+4) = nobj->id;
+	memcpy(msgbuff+8, msg, len * 2);
+	return NetworkMessageOut();
+}
+
 int server_write_key(unsigned char code, int state)
 {
 	if(!keybid) return -1;
@@ -443,6 +453,20 @@ void server_object_attach(clsobj *a, clsobj *b)
 	nf[0] = 0x02200008;
 	nf[1] = a->id;
 	nf[2] = b->id;
+	NetworkMessageOut();
+	return;
+}
+/** Attach B to A */
+void server_object_attach(clsobj *a, clsobj *b, int ap, int bp)
+{
+	if(!unet) return;
+	if(!a || !b) return;
+	uint32_t *nf = (uint32_t*)msgbuff;
+	nf[0] = 0x02600010;
+	nf[1] = a->id;
+	nf[2] = b->id;
+	nf[3] = (uint32_t)ap;
+	nf[4] = (uint32_t)bp;
 	NetworkMessageOut();
 	return;
 }
@@ -740,6 +764,8 @@ int NetworkMessageIn(unsigned char *in, size_t len)
 	mc = (mh >> 20) & 0xfff;
 	ml = mh & 0x1fff;
 	switch(mc) {
+	case 0x10:
+		break;
 	case 0xE0:
 	{
 		uint32_t vsa = 0;
@@ -946,6 +972,7 @@ int NetworkMessageIn(unsigned char *in, size_t len)
 		break;
 
 	default:
+		LogMessage("server: unknown message 0x%03x", mc);
 		break;
 	}
 	return 0;
@@ -1182,7 +1209,7 @@ int ICIMain()
 			ImGui::SetNextWindowPosCenter(ui_pcenter == 2 ? ImGuiSetCond_Appearing : ImGuiSetCond_Always);
 			if(ImGui::Begin("About ICIClient##iciabout", &ui_about, icidefwin)) {
 				ImGui::Indent();
-				ImGui::Text("ICIClient Version 0.10");
+				ImGui::Text("ICIClient Version 0.10a");
 				ImGui::Text(CPRTTXT);
 				ImGui::SetWindowSize(ImVec2(ImGui::GetItemRectSize().x * 2.0f, 400.0f), ImGuiSetCond_Always);
 				ImGui::Unindent();
@@ -1364,26 +1391,43 @@ void ShowAttachPop(clsobj *aobj, bool mem)
 		ImGui::EndPopup();
 	}
 }
+
+static char fetchitemtext[256];
+bool fetchitems(void * data, int index, const char **out)
+{
+	clsobj *nobj = objlist.list[index];
+	if(!nobj) {
+		snprintf(fetchitemtext, 256, "<NULL>");
+		*out = fetchitemtext;
+		return true;
+	}
+	snprintf(fetchitemtext, 256, "%s [%04x]", nobj->iclazz->name.get(), nobj->id);
+	*out = fetchitemtext;
+	return true;
+}
 void ShowAttachAtPop(clsobj *aobj)
 {
+	static int deva = 0;
+	static int devb = 0;
+	static int pointa = 0;
+	static int pointb = 0;
 	char wtitle[256];
 	int i;
 	if(!aobj) return;
 	if(ImGui::BeginPopup("ItemAttachAt")) {
-		for(i = 0; i < objlist.count; i++) {
-			clsobj *nobj = objlist.list[i];
-			if(!nobj) continue;
-			if(nobj->cid < 0x2f00) continue;
-			devclass *ncls = nobj->iclazz;
-			if(ncls) {
-				snprintf(wtitle, 256, "%s [%04x]###IA-%X", nobj->iclazz->name.get(), nobj->id, i);
-			} else {
-				snprintf(wtitle, 256, "Class-%04X [%04x]###IA-%X", nobj->cid, nobj->id, i);
+		ImGui::Combo("Dev A", &deva, &fetchitems, 0, objlist.count, -1);
+		ImGui::Combo("Dev B", &devb, &fetchitems, 0, objlist.count, -1);
+		ImGui::InputInt("Point A", &pointa, 1, 100, 0);
+		ImGui::InputInt("Point B", &pointb, 1, 100, 0);
+		if(ImGui::Selectable("Confirm")) {
+			if(deva >= objlist.count || devb >= objlist.count) {
+				LogMessage("Error: invalid devices selected");
+				return;
 			}
-			if(ImGui::Selectable(wtitle)) {
-				LogMessage("Attach [%04X] to [%04X]", nobj->id, aobj->id);
-				//server_object_attach(aobj, nobj);
-			}
+			clsobj *aobj = objlist.list[deva];
+			clsobj *bobj = objlist.list[devb];
+			LogMessage("Attach [%04X] to [%04X]", aobj->id, bobj->id);
+			server_object_attach(aobj, bobj, pointa, pointb);
 		}
 		ImGui::EndPopup();
 	}
@@ -1490,6 +1534,14 @@ int UpdateDevViewer()
 		if(isopen) {
 			ImGui::Text("Class"); ImGui::NextColumn();
 			ImGui::Text("%04X", nobj->cid); ImGui::NextColumn();
+			if(nobj->cid == 0x2fee) {
+				ImGui::Text("CEMEI Connection"); ImGui::NextColumn();
+				if(ImGui::Button("Subscribe")) {
+					uint16_t cm = 0xffff;
+					server_write_msg(nobj, &cm, 1);
+				}
+				ImGui::NextColumn();
+			}
 			if(nobj->mid || (nobj->cid >= 0x3000)) {
 				ImGui::Text("Memory ID"); ImGui::NextColumn();
 				if(nobj->mid) {

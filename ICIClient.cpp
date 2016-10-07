@@ -766,6 +766,38 @@ int NetworkMessageIn(unsigned char *in, size_t len)
 	switch(mc) {
 	case 0x10:
 		break;
+	case 0x80:
+		{
+		char bad1d3a[256];
+		int w = 0;
+		w += snprintf(bad1d3a, 256 - w, "MsgIn [%04x]:", mi[1]);
+		ml -= 4;
+		ml /= 2;
+		if(ml > 20) ml = 20;
+		mw = (uint16_t*)(mi + 2);
+		while(ml) {
+			w += snprintf(bad1d3a + w, 256 - w, " %04x", *mw);
+			ml--; mw++;
+		}
+		LogMessage(bad1d3a);
+		}
+		break;
+	case 0x81:
+		{
+		char bad1d3a[256];
+		int w = 0;
+		w += snprintf(bad1d3a, 256 - w, "MsgIn (%d):", mi[1]);
+		ml -= 4;
+		ml /= 2;
+		if(ml > 20) ml = 20;
+		mw = (uint16_t*)(mi + 2);
+		while(ml) {
+			w += snprintf(bad1d3a + w, 256 - w, " %04x", *mw);
+			ml--; mw++;
+		}
+		LogMessage(bad1d3a);
+		}
+		break;
 	case 0xE0:
 	{
 		uint32_t vsa = 0;
@@ -944,7 +976,7 @@ int NetworkMessageIn(unsigned char *in, size_t len)
 	case 0x222:
 		if(mi[2]) LogMessage("[error] server: %d - Object [%04x] Attach", mi[2], mi[1]);
 		else {
-			LogMessage("server: Object [%04x] Attached", mi[1]);
+			LogMessage("server: Object [%04x]A(%d) [%04x]B(%d) Attached", mi[1], mi[4], mi[3], mi[5]);
 			net_listheir = 0;
 		}
 		break;
@@ -1514,7 +1546,7 @@ int UpdateDevViewer()
 		nobj->rparent = true;
 		devclass *ncls = nobj->iclazz;
 		if(ncls) {
-			snprintf(wtitle, 256, "%s [%04x]###dev%X", nobj->iclazz->name.get(), nobj->id, i);
+			snprintf(wtitle, 256, "%s [%04x]", nobj->iclazz->name.get(), nobj->id);
 		} else {
 			snprintf(wtitle, 256, "Class-%04X [%04x]###dev%X", nobj->cid, nobj->id, i);
 		}
@@ -1534,9 +1566,9 @@ int UpdateDevViewer()
 		if(isopen) {
 			ImGui::Text("Class"); ImGui::NextColumn();
 			ImGui::Text("%04X", nobj->cid); ImGui::NextColumn();
-			if(nobj->cid == 0x2fee) {
-				ImGui::Text("CEMEI Connection"); ImGui::NextColumn();
-				if(ImGui::Button("Subscribe")) {
+			if(nobj->cid >= 0x2f00) {
+				ImGui::Text("EMEI"); ImGui::NextColumn();
+				if(ImGui::SmallButton("Subscribe")) {
 					uint16_t cm = 0xffff;
 					server_write_msg(nobj, &cm, 1);
 				}

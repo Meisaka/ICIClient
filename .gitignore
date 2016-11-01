@@ -6,4 +6,7 @@
 *~
 *.swp
 ipch
-
+build
+imgui.ini
+Release
+Debug

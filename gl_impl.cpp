@@ -3,7 +3,7 @@
 
 #include "ici.h"
 // SDL WM
-#include <SDL2/SDL_syswm.h>
+#include <SDL_syswm.h>
 
 // Data
 static double  g_Time = 0.0f;

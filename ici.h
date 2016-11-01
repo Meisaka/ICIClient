@@ -3,9 +3,12 @@
 
 #include <stdint.h>
 #include <stdlib.h>
-#include <SDL2/SDL.h>
-#define GLEW_STATIC
+#include <SDL.h>
+#ifdef __APPLE__
+#include <OpenGL/gl.h>
+#else
 #include <GL/glew.h>
+#endif
 #include "ui/imgui.h"
 #include <new>
 

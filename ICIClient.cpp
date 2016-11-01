@@ -36,8 +36,6 @@ static const char * LICTXT =
 #include "resource.h"
 #include <tchar.h>
 #pragma comment(lib, "WS2_32.lib")
-#pragma comment(lib, "OpenGL32.lib")
-#pragma comment(lib, "glew32s.lib")
 #else
 #include <unistd.h>
 #include <sys/types.h>

@@ -5,6 +5,7 @@
 *.user
 *~
 *.swp
+*.json
 ipch
 build
 imgui.ini

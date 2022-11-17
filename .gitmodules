@@ -1,3 +1,6 @@
 [submodule "ui"]
 	path = ui
 	url = git@github.com:ocornut/imgui.git
+[submodule "isiCPU"]
+	path = isiCPU
+	url = ./isiCPU

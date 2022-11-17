@@ -1,7 +1,9 @@
 
-CMAKE_MINIMUM_REQUIRED(VERSION 2.8)
+CMAKE_MINIMUM_REQUIRED(VERSION 3.10)
 
 PROJECT(ICIClient)
+
+add_subdirectory(isiCPU)
 
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${PROJECT_SOURCE_DIR}/cmake")
 
@@ -13,10 +15,12 @@ set(ICIC_SRC
 	"ui/imgui.cpp"
 	"ui/imgui_draw.cpp"
 	"ui/imgui_demo.cpp"
+	"glapi/glad.c"
 )
 
 set(ICIC_INC
 	"ici.h"
+	"glapi/glad.h"
 )
 
 if(WIN32)
@@ -36,19 +40,10 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
 list(APPEND CMAKE_CXX_FLAGS "-std=c++11")
 endif()
 
-set(GLEW_STATIC TRUE CACHE BOOL "Use static Glew library")
-
-if(GLEW_STATIC)
-add_definitions(-DGLEW_STATIC)
-endif()
-
 find_package(SDL2 REQUIRED)
-if(NOT APPLE)
-find_package(GLEW REQUIRED)
-endif()
 find_package(OpenGL REQUIRED)
 
-include_directories(${SDL2_INCLUDE_DIR} ${GLEW_INCLUDE_DIR})
+include_directories(${SDL2_INCLUDE_DIR})
 
 if(WIN32)
 	get_filename_component(SDL2_LIB_PATH ${SDL2_LIBRARY} DIRECTORY)
@@ -70,7 +65,7 @@ endif()
 source_group("Include Files" FILES ${ICIC_INC_FILES})
 source_group("Text" FILES README.txt LICENSE.txt)
 
-target_link_libraries(ICIClient ${SDL2_LIBRARY} ${OPENGL_gl_LIBRARY} ${GLEW_LIBRARY})
+target_link_libraries(ICIClient ${SDL2_LIBRARY} ${OPENGL_gl_LIBRARY})
 
 if(COPY_SDL2_DLL)
 	if(NOT SDL2_DLL)

@@ -6,6 +6,11 @@
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h>
+#include <vector>
+#include <string>
+#include <memory>
+#include <unordered_map>
+#include <deque>
 
 #ifdef WIN32
 #include "targetver.h"
@@ -16,49 +21,59 @@ static HANDLE ECCON; // The console
 #include "unistd.h"
 #endif
 
-// For the console example, here we are using a more C++ like approach of declaring a class to hold the data and the functions.
-struct ICIConsole
-{
+struct ICICommand {
+	void *context;
+	virtual void operator()(const std::string &command, std::string &line) {}
+};
+
+struct ICIHelpCommand : public ICICommand {
+	virtual void operator()(const std::string &command, std::string &line);
+} iciHelpCommand;
+struct ICIHistoryCommand : public ICICommand {
+	virtual void operator()(const std::string &command, std::string &line);
+} iciHistoryCommand;
+struct ICIClearCommand : public ICICommand {
+	virtual void operator()(const std::string &command, std::string &line);
+} iciClearCommand;
+struct ICIListCommand : public ICICommand {
+	virtual void operator()(const std::string &command, std::string &line);
+} iciListCommand;
+
+class ICIConsole {
+public:
 	char InputBuf[256];
 	bool ScrollToBottom;
-	int HistoryPos;	// -1: new line, 0..History.Size-1 browsing history.
+	int HistoryPos; // -1: new line, 0..History.Size-1 browsing history.
 	ImVector<char*> Items;
-	ImVector<char*> History;
-	ImVector<const char*> Commands;
+	std::deque<std::string> History;
+	std::unordered_map<std::string, ICICommand*> Commands;
 
-	ICIConsole()
-	{
+	ICIConsole() {
 		ClearLog();
 		memset(InputBuf, 0, sizeof(InputBuf));
 		HistoryPos = -1;
-		Commands.push_back("help");
-		Commands.push_back("history");
-		Commands.push_back("clear");
-		Commands.push_back("cluwne");  // "classify" is here to provide an example of "C"+[tab] completing to "CL" and displaying matches.
+		Commands["help"] = &iciHelpCommand;
+		Commands["history"] = &iciHistoryCommand;
+		Commands["clear"] = &iciClearCommand;
+		Commands["list"] = &iciListCommand;
 		AddLogText("Console Loaded");
 	}
-	~ICIConsole()
-	{
+	~ICIConsole() {
 		ClearLog();
-		for (int i = 0; i < History.Size; i++)
-			free(History[i]);
 	}
 
 	// Portable helpers
-	static int   Stricmp(const char* str1, const char* str2)		 { int d; while ((d = toupper(*str2) - toupper(*str1)) == 0 && *str1) { str1++; str2++; } return d; }
 	static int   Strnicmp(const char* str1, const char* str2, int n) { int d = 0; while (n > 0 && (d = toupper(*str2) - toupper(*str1)) == 0 && *str1) { str1++; str2++; n--; } return d; }
 	static char* Strdup(const char *str)							 { size_t len = strlen(str) + 1; void* buff = malloc(len); return (char*)memcpy(buff, (const void*)str, len); }
 
-	void ClearLog()
-	{
+	void ClearLog() {
 		for (int i = 0; i < Items.Size; i++)
 			free(Items[i]);
 		Items.clear();
 		ScrollToBottom = true;
 	}
 
-	void AddLogText(const char* txt)
-	{
+	void AddLogText(const char* txt) {
 		Items.push_back(Strdup(txt));
 		ScrollToBottom = true;
 	}
@@ -75,15 +90,12 @@ struct ICIConsole
 		ScrollToBottom = true;
 	}
 
-	void Draw(const char* title, bool* p_open)
-	{
+	void Draw(const char* title, bool* p_open) {
 		ImGui::SetNextWindowSize(ImVec2(520,600), ImGuiSetCond_FirstUseEver);
 		if(!ImGui::Begin(title, p_open, ImGuiWindowFlags_ShowBorders)) {
 			ImGui::End();
 			return;
 		}
-
-		// TODO: display items starting from the bottom
 
 		if (ImGui::SmallButton("Clear")) ClearLog(); ImGui::SameLine();
 		if (ImGui::SmallButton("Scroll to bottom")) ScrollToBottom = true;
@@ -104,8 +116,7 @@ struct ICIConsole
 		}
 
 		ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4,1)); // Tighten spacing
-		for (int i = 0; i < Items.Size; i++)
-		{
+		for (int i = 0; i < Items.Size; i++) {
 			const char* item = Items[i];
 			if (!filter.PassFilter(item))
 				continue;
@@ -133,7 +144,7 @@ struct ICIConsole
 			while (input_end > InputBuf && input_end[-1] == ' ') input_end--; *input_end = 0;
 			if (InputBuf[0])
 				ExecCommand(InputBuf);
-			strcpy(InputBuf, "");
+			InputBuf[0] = 0;
 		}
 
 		// Demonstrate keeping auto focus on the input box
@@ -143,49 +154,43 @@ struct ICIConsole
 		ImGui::End();
 	}
 
-	void ExecCommand(const char* command_line)
-	{
-		AddLog("# %s\n", command_line);
+	void ExecCommand(const char* command_line_cstr) {
+		std::string command = command_line_cstr;
+		std::string command_line = command_line_cstr;
+		AddLog("# %s\n", command_line_cstr);
 
 		// Insert into history. First find match and delete it so it can be pushed to the back. This isn't trying to be smart or optimal.
 		HistoryPos = -1;
-		for (int i = History.Size-1; i >= 0; i--)
-			if (Stricmp(History[i], command_line) == 0) {
-				free(History[i]);
-				History.erase(History.begin() + i);
+		for (auto itr = History.begin(); itr != History.end(); itr++) {
+			if (*itr == command) {
+				History.erase(itr);
 				break;
 			}
-		History.push_back(Strdup(command_line));
+		}
+		History.push_back(command_line);
 
-		// Process command
-		if (Stricmp(command_line, "clear") == 0) {
-			ClearLog();
-		} else if (Stricmp(command_line, "help") == 0) {
-			AddLog("Commands:");
-			for (int i = 0; i < Commands.Size; i++)
-				AddLog("- %s", Commands[i]);
-		} else if (Stricmp(command_line, "history") == 0) {
-			for (int i = History.Size >= 10 ? History.Size - 10 : 0; i < History.Size; i++)
-				AddLog("%3d: %s\n", i, History[i]);
+		auto com_pair = Commands.find(command);
+		if (com_pair == Commands.cend()) {
+			AddLog("Unknown command: '%s'", command_line_cstr);
 		} else {
-			AddLog("Unknown command: '%s'\n", command_line);
+			// Process command
+			(*com_pair->second)(command, command);
+		}
+
+		while(History.size() > 100) {
+			History.pop_front();
 		}
 	}
 
-	static int TextEditCallbackStub(ImGuiTextEditCallbackData* data)
-	{
+	static int TextEditCallbackStub(ImGuiTextEditCallbackData* data) {
 		ICIConsole* console = (ICIConsole*)data->UserData;
 		return console->TextEditCallback(data);
 	}
 
-	int	 TextEditCallback(ImGuiTextEditCallbackData* data)
-	{
-		//AddLog("cursor: %d, selection: %d-%d", data->CursorPos, data->SelectionStart, data->SelectionEnd);
+	int TextEditCallback(ImGuiTextEditCallbackData* data) {
 		switch (data->EventFlag) {
 		case ImGuiInputTextFlags_CallbackCompletion:
 		{
-			// Example of TEXT COMPLETION
-
 			// Locate beginning of current word
 			const char* word_end = data->Buf + data->CursorPos;
 			const char* word_start = word_end;
@@ -198,9 +203,9 @@ struct ICIConsole
 
 			// Build a list of candidates
 			ImVector<const char*> candidates;
-			for (int i = 0; i < Commands.Size; i++)
-				if (Strnicmp(Commands[i], word_start, (int)(word_end-word_start)) == 0)
-					candidates.push_back(Commands[i]);
+			for (auto &cm : Commands)
+				if (Strnicmp(cm.first.c_str(), word_start, (int)(word_end-word_start)) == 0)
+					candidates.push_back(cm.first.c_str());
 
 			if (candidates.Size == 0) {
 				// No match
@@ -244,18 +249,22 @@ struct ICIConsole
 			const int prev_history_pos = HistoryPos;
 			if (data->EventKey == ImGuiKey_UpArrow) {
 				if (HistoryPos == -1)
-					HistoryPos = History.Size - 1;
+					HistoryPos = ((int)History.size()) - 1;
 				else if (HistoryPos > 0)
 					HistoryPos--;
 			} else if (data->EventKey == ImGuiKey_DownArrow) {
 				if (HistoryPos != -1)
-					if (++HistoryPos >= History.Size)
+					if (++HistoryPos >= ((int)History.size()))
 						HistoryPos = -1;
 			}
 
 			// A better implementation would preserve the data on the current input line along with cursor position.
 			if (prev_history_pos != HistoryPos) {
-				data->CursorPos = data->SelectionStart = data->SelectionEnd = data->BufTextLen = (int)snprintf(data->Buf, (size_t)data->BufSize, "%s", (HistoryPos >= 0) ? History[HistoryPos] : "");
+				data->CursorPos =
+				data->SelectionStart =
+				data->SelectionEnd =
+				data->BufTextLen =
+					snprintf(data->Buf, (size_t)data->BufSize, "%s", (HistoryPos >= 0) ? History[HistoryPos].c_str() : "");
 				data->BufDirty = true;
 			}
 		}
@@ -279,8 +288,32 @@ static ICIConsole *uiconsole;
 static bool uiconsole_late = false;
 bool uiconsole_open = false;
 
-void StartConsole()
-{
+void ICIHelpCommand::operator()(const std::string &command, std::string &line) {
+	uiconsole->AddLog("Commands:");
+	for (auto &cm : uiconsole->Commands) {
+		uiconsole->AddLog("- %s", cm.first.c_str());
+	}
+}
+void ICIHistoryCommand::operator()(const std::string &command, std::string &line) {
+	int i = 0;
+	int thresh = uiconsole->History.size();
+	if (thresh > 10) thresh -= 10;
+	else thresh = 0;
+	for (auto &itr : uiconsole->History) {
+		if (i >= thresh)
+			uiconsole->AddLog("%3d: %s\n", i + 1, itr.c_str());
+		i++;
+	}
+}
+void ICIClearCommand::operator()(const std::string &command, std::string &line) {
+	uiconsole->ClearLog();
+}
+void ICIListCommand::operator()(const std::string &command, std::string &line) {
+	//
+}
+
+
+void StartConsole() {
 #ifdef WIN32
 	COORD dws = {80,400};
 	AllocConsole();
@@ -291,27 +324,23 @@ void StartConsole()
 	uiconsole = new ICIConsole;
 }
 
-void StartGUIConsole()
-{
+void StartGUIConsole() {
 	uiconsole_late = true;
 }
 
-void ShowUIConsole()
-{
+void ShowUIConsole() {
 	if(uiconsole_open)
 		ImGui::SetWindowFocus("ICI Console");
 	else
 		uiconsole_open = true;
 }
 
-void DrawUIConsole()
-{
+void DrawUIConsole() {
 	if(uiconsole_open) uiconsole->Draw("ICI Console", &uiconsole_open);
 }
 
 IM_PRINTFARGS(1)
-void LogMessage(const char *fmt, ...)
-{
+void LogMessage(const char *fmt, ...) {
 	char conbuf[1024];
 	int conlen;
 	va_list val;

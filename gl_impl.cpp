@@ -5,6 +5,11 @@
 // SDL WM
 #include <SDL_syswm.h>
 
+#ifdef __APPLE__
+#include <OpenGL/gl.h>
+#endif
+#include "glapi/glad.h"
+
 // Data
 static double  g_Time = 0.0f;
 static bool    g_MousePressed[5] = { false, false, false, false, false };
@@ -33,23 +38,6 @@ void ICIC_RenderDrawLists(ImDrawData* draw_data)
 	if (fb_width == 0 || fb_height == 0)
 		return;
 	draw_data->ScaleClipRects(io.DisplayFramebufferScale);
-
-	// Backup GL state
-	GLint last_program; glGetIntegerv(GL_CURRENT_PROGRAM, &last_program);
-	GLint last_texture; glGetIntegerv(GL_TEXTURE_BINDING_2D, &last_texture);
-	GLint last_active_texture; glGetIntegerv(GL_ACTIVE_TEXTURE, &last_active_texture);
-	GLint last_array_buffer; glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &last_array_buffer);
-	GLint last_element_array_buffer; glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &last_element_array_buffer);
-	GLint last_vertex_array; glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &last_vertex_array);
-	GLint last_blend_src; glGetIntegerv(GL_BLEND_SRC, &last_blend_src);
-	GLint last_blend_dst; glGetIntegerv(GL_BLEND_DST, &last_blend_dst);
-	GLint last_blend_equation_rgb; glGetIntegerv(GL_BLEND_EQUATION_RGB, &last_blend_equation_rgb);
-	GLint last_blend_equation_alpha; glGetIntegerv(GL_BLEND_EQUATION_ALPHA, &last_blend_equation_alpha);
-	GLint last_viewport[4]; glGetIntegerv(GL_VIEWPORT, last_viewport);
-	GLboolean last_enable_blend = glIsEnabled(GL_BLEND);
-	GLboolean last_enable_cull_face = glIsEnabled(GL_CULL_FACE);
-	GLboolean last_enable_depth_test = glIsEnabled(GL_DEPTH_TEST);
-	GLboolean last_enable_scissor_test = glIsEnabled(GL_SCISSOR_TEST);
 
 	// Setup render state: alpha-blending enabled, no face culling, no depth testing, scissor enabled
 	glEnable(GL_BLEND);
@@ -81,8 +69,7 @@ void ICIC_RenderDrawLists(ImDrawData* draw_data)
 		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_ElementsHandle);
 		glBufferData(GL_ELEMENT_ARRAY_BUFFER, (GLsizeiptr)cmd_list->IdxBuffer.size() * sizeof(ImDrawIdx), (GLvoid*)&cmd_list->IdxBuffer.front(), GL_STREAM_DRAW);
 
-		for (const ImDrawCmd* pcmd = cmd_list->CmdBuffer.begin(); pcmd != cmd_list->CmdBuffer.end(); pcmd++)
-		{
+		for (const ImDrawCmd* pcmd = cmd_list->CmdBuffer.begin(); pcmd != cmd_list->CmdBuffer.end(); pcmd++) {
 			if (pcmd->UserCallback) {
 				pcmd->UserCallback(cmd_list, pcmd);
 			} else {
@@ -101,20 +88,6 @@ void ICIC_RenderDrawLists(ImDrawData* draw_data)
 		}
 	}
 
-	// Restore modified GL state
-	glUseProgram(last_program);
-	glActiveTexture(last_active_texture);
-	glBindTexture(GL_TEXTURE_2D, last_texture);
-	glBindVertexArray(last_vertex_array);
-	glBindBuffer(GL_ARRAY_BUFFER, last_array_buffer);
-	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, last_element_array_buffer);
-	glBlendEquationSeparate(last_blend_equation_rgb, last_blend_equation_alpha);
-	glBlendFunc(last_blend_src, last_blend_dst);
-	if (last_enable_blend) glEnable(GL_BLEND); else glDisable(GL_BLEND);
-	if (last_enable_cull_face) glEnable(GL_CULL_FACE); else glDisable(GL_CULL_FACE);
-	if (last_enable_depth_test) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
-	if (last_enable_scissor_test) glEnable(GL_SCISSOR_TEST); else glDisable(GL_SCISSOR_TEST);
-	glViewport(last_viewport[0], last_viewport[1], (GLsizei)last_viewport[2], (GLsizei)last_viewport[3]);
 }
 
 static const char* ICIC_GetClipboardText()
@@ -262,10 +235,23 @@ bool ICIC_CreateDeviceObjects()
 	glShaderSource(g_VertHandle, 1, &vertex_shader, 0);
 	glShaderSource(g_FragHandle, 1, &fragment_shader, 0);
 	glCompileShader(g_VertHandle);
+	GLint status;
+	glGetShaderiv(g_VertHandle, GL_COMPILE_STATUS, &status);
 	glCompileShader(g_FragHandle);
+	glGetShaderiv(g_FragHandle, GL_COMPILE_STATUS, &status);
+	if(status == GL_FALSE) {
+		GLsizei buflength = 0;
+		glGetShaderiv(g_FragHandle, GL_INFO_LOG_LENGTH, &buflength);
+		glGetShaderInfoLog(g_FragHandle, 0, &buflength, nullptr);
+		LogMessage("shader error");
+	}
 	glAttachShader(g_ShaderHandle, g_VertHandle);
 	glAttachShader(g_ShaderHandle, g_FragHandle);
 	glLinkProgram(g_ShaderHandle);
+	glGetProgramiv(g_ShaderHandle, GL_LINK_STATUS, &status);
+	if(status == GL_FALSE) {
+		LogMessage("shader error");
+	}
 
 	g_Attribs.Tex = glGetUniformLocation(g_ShaderHandle, "Texture");
 	g_Attribs.Offset = glGetUniformLocation(g_ShaderHandle, "Offset");
